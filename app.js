@@ -480,10 +480,14 @@
                     '<button type="button" class="azul" data-action="cap-modo" data-valor="riego" aria-pressed="' + esRiego + '">Riego</button>' +
                     '<button type="button" class="verde" data-action="cap-modo" data-valor="apli" aria-pressed="' + !esRiego + '">Aplicación</button>' +
                 '</div>' +
-                '<div class="field">Vivero<div style="display:flex;flex-direction:column;gap:8px;margin-top:2px">' + listaViveros + '</div></div>' +
+                '<div class="captura-cuerpo">' +
+                    '<div class="field captura-lista">Vivero<div class="lista-viveros">' + listaViveros + '</div></div>' +
+                    '<div class="captura-form">' +
                 (v ? cuerpo : '<div class="notice muted">Elige un vivero para continuar.</div>') +
                 (v ? '<label class="field">Observaciones<textarea data-bind="captura.obs" placeholder="Condiciones, notas...">' + esc(c.obs) + '</textarea></label>' : '') +
                 (v ? '<button type="button" class="btn-guardar ' + (esRiego ? 'riego' : 'apli') + '" data-action="cap-guardar">' + etiquetaGuardar + '</button>' : '') +
+                '</div>' +
+                '</div>' +
             '</div>';
     }
 
