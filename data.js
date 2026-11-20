@@ -56,7 +56,7 @@
   archivo[12] = Object.assign({}, archivo[12], { num: 12 });                              // # repetido
 
   window.DATA = {
-    usuario: { nombre: 'Alessandro', rol: 'Administrador' },
+    usuario: { nombre: 'Alessandro', rol: 'Administrador', lugar: 'Centro Experimental' },
 
     viveros: [
       { id: 21, nombre: '01_VIVERO_SELF_2026C_1', tipo: 'Self', lugar: 'Centro Experimental', temporada: '2026C', fecha_siembra: haceDias(16), activo: true, study_dbid: 1201 },
@@ -137,7 +137,58 @@
       tiposRiego: ['Goteo', 'Aspersión', 'Gravedad', 'Manual', 'Otro'],
       razonesRiegoNo: ['Lluvia / suelo húmedo', 'Falta de agua', 'Falla de bomba / equipo', 'Falta de personal', 'Decisión técnica', 'Otro (describir en observaciones)'],
       razonesAplicacionNo: ['Clima / lluvia', 'Falta de producto', 'Falta de personal', 'Decisión técnica', 'Otro (describir en observaciones)'],
-      etapas: ['VE', 'V0', 'V1', 'V2', 'V3', 'V4', 'V5–V6', 'V6–V7', 'V7–V9', 'V9–V10', 'V11–V12', 'VT', 'R1–R2', 'R3–R4']
-    }
+      etapas: ['VE', 'V0', 'V1', 'V2', 'V3', 'V4', 'V5-V6', 'V6-V7', 'V7-V9', 'V9-V10', 'V11-V12', 'VT', 'R1-R2', 'R3-R4'],
+      tiposVivero: ['Self', 'Cross']
+    },
+
+    // Estudios que existen en BMS. Sirven para vincular cada vivero con su estudio exacto
+    // (así la subida nocturna ya no busca por nombre).
+    //SUPABASE: se llenaría con la lista de estudios que trae clever-fuction desde BMS.
+    estudiosBMS: [
+      { study_dbid: 1058, nombre: '01 SLFAFCIM_2026B', temporada: '2026B' },
+      { study_dbid: 1059, nombre: '02 BCRAFCIM_2026B', temporada: '2026B' },
+      { study_dbid: 1060, nombre: '03 BC1_BlueLines_2026B', temporada: '2026B' },
+      { study_dbid: 1201, nombre: '01_VIVERO_SELF_2026C_1', temporada: '2026C' },
+      { study_dbid: 1202, nombre: '02_VIVERO_CROSS_2026C_1', temporada: '2026C' },
+      { study_dbid: 1203, nombre: '03_VIVERO_SELF_2026C_2', temporada: '2026C' },
+      { study_dbid: 1204, nombre: '04_VIVERO_CROSS_2026C_2', temporada: '2026C' },
+      { study_dbid: 1205, nombre: '05_VIVERO_SELF_2026C_3', temporada: '2026C' },
+      { study_dbid: 1206, nombre: '06_VIVERO_CROSS_2026C_3', temporada: '2026C' },
+      { study_dbid: 1207, nombre: '07_VIVERO_SELF_2026C_4', temporada: '2026C' },
+      { study_dbid: 1208, nombre: '08_VIVERO_CROSS_2026C_4', temporada: '2026C' },
+      { study_dbid: 1210, nombre: '10_VIVERO_BC_2026C_1', temporada: '2026C' },
+      { study_dbid: 1211, nombre: '11_VIVERO_NUEVO_2026C', temporada: '2026C' },
+      { study_dbid: 1212, nombre: '11_VIVERO_NUEVO_2026C (copia)', temporada: '2026C' }
+    ]
   };
+
+  // Viveros extra de 2026C para ver la app con una temporada completa (11 viveros).
+  // [id, nombre, tipo, días desde la siembra, study_dbid]
+  var extra2026C = [
+    [24, '03_VIVERO_SELF_2026C_2', 'Self', 15, 1203],
+    [25, '04_VIVERO_CROSS_2026C_2', 'Cross', 15, 1204],
+    [26, '05_VIVERO_SELF_2026C_3', 'Self', 13, 1205],
+    [27, '06_VIVERO_CROSS_2026C_3', 'Cross', 12, 1206],
+    [28, '07_VIVERO_SELF_2026C_4', 'Self', 10, 1207],
+    [29, '08_VIVERO_CROSS_2026C_4', 'Cross', 9, 1208],
+    [30, '09_VIVERO_SELF_2026C_5', 'Self', 5, null],
+    [31, '10_VIVERO_BC_2026C_1', 'Cross', 4, 1210]
+  ];
+  // A estos viveros se les generan registros "al día": riegos de los último 7 días
+  // y las aplicaciones del plan cuya ventana ya pasó, para que el panel se llene de atrasos.
+  var D = window.DATA;
+  extra2026C.forEach(function (x) {
+    var dds = x[3];
+    D.viveros.push({ id: x[0], nombre: x[1], tipo: x[2], lugar: 'Centro Experimental', temporada: '2026C',
+      fecha_siembra: haceDias(dds), activo: true, study_dbid: x[4] });
+    for (var d = Math.min(6, dds); d >= 1; d--) {
+      D.registro_riegos.push({ vivero_id: x[0], fecha_riego: haceDias(d), riego_efectivo: 'SI', tipo_riego: 'Goteo', razon_no: '', marca_temporal: marca(d, '06:50') });
+    }
+    filasPlanBase.forEach(function (f) {
+      if (f[2] < dds) {
+        D.registro_aplicaciones.push({ vivero_id: x[0], num_aplicacion: String(f[0]), realizado: 'SI',
+          fecha_real: haceDias(dds - f[1]), marca_temporal: marca(dds - f[1], '07:30') });
+      }
+    });
+  });
 })();

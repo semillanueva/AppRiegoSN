@@ -23,6 +23,7 @@
     function deISO(s) { var p = String(s).split('-'); return new Date(+p[0], +p[1] - 1, +p[2]); }
     function sumarDias(d, n) { var x = new Date(d); x.setDate(x.getDate() + n); return x; }
     function diasEntre(a, b) { return Math.round((b - a) / 86400000); }
+    function ddmmaaaa(s) { var p = String(s).split('-'); return p[2] + '/' + p[1] + '/' + p[0]; }
     function ddmm(d) { return String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0'); } 
     var DIAS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
     var MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
@@ -66,6 +67,12 @@
         return D.registro_aplicaciones.filter(function (r) { return r.vivero_id === viveroId && r.realizado !== 'NO'; })
             .map(function (r) { return String(r.num_aplicacion); });
     }
+    function estudioPorId(id) { return D.estudiosBMS.filter(function (e) { return e.study_dbid === id; })[0];}
+    // Vivero que ya se usa un estudio en BMS (sin contar el que ya se está editando)
+    function viveroConEstudio(studyId, exceptoId) {
+        return D.viveros.filter(function (v) { return v.study_dbid === studyId && v.id !== exceptoId; })[0];
+    }
+    function porNombre(a, b) { return a.temporada === b.temporada ? a.nombre.localeCompare(b.nombre) : (a.temporada < b.temporada ? 1 : -1); }
     function riegosDe(viveroId, fechaISO) {
         return D.registro_riegos.filter(function (r) { return r.vivero_id === viveroId && r.fecha_riego === fechaISO; });
     }
@@ -102,6 +109,8 @@
         filtro: { temporada: '2026C', lugar: 'Centro Experimental' },
         planes: { tipo: 'aplicaciones', lugar: 'Centro Experimental', temporada: '2026C', archivo: null, filas: null },
         captura: nuevaCaptura('riego'),
+        capturaLugar: D.usuario.lugar || 'Todos',
+        viveros: { temporada: '2026C', lugar: 'Todos', ver: 'activos', form: null },
         enLinea: navigator.onLine
     };
     function nuevaCaptura(modo) {
@@ -327,7 +336,7 @@
 
         (val ? 
             '<section class="card">' +
-                '<div class="card-head"><h2>3 · Revisión antes de Publicar</h2>' +
+                '<div class="card-head"><h2>3 · Revisión antes de publicar</h2>' +
                     '<div class="field-inline">' +
                         '<span class="pill ok">' + val.validas + ' filas válidas</span>' +
                         (val.errores ? '<span class="pill err">' + val.errores + ' con errores</span>' : '') +
@@ -424,7 +433,7 @@
                             '<td class="kpi-sub">' + (v.study_dbid ? 'Estudio ' + v.study_dbid + ' · instancia confirmada' : 'Sin asignar') + '</td>' +
                             '<td>'  + (x.ap_filas ? x.ap_filas + ' filas' : '-') + '</td><td>' + (x.r_filas ? x.r_filas + ' filas' : '-') + '</td>' +
                             '<td><span class="pill ' + e.cls + '">' + e.txt + '</span>' + (x.error ? '<div class="kpi-sub" style="margin-top:4px">' + esc(x.error) + '</div>' : '') + '</td>' +
-                            '<td style="text-align:right"><button type="button" class="btn btn-sm" data-action="sync-accion" data-valor="' + esc(e.accion) + '" data-vivero="' + esc(v.nombre) + '">' + e.accion + '</button></td></tr>';
+                            '<td style="text-align:right"><button type="button" class="btn btn-sm" data-action="sync-accion" data-valor="' + esc(e.accion) + '" data-vivero="' + esc(v.nombre) + '" data-id="' + v.id + '">' + e.accion + '</button></td></tr>';
                     }).join('') +
                 '</tbody></table></div>' +
             '</section>' +
@@ -445,35 +454,173 @@
     }
 
     // --------------------------------------------------
+    // PANTALLA 5 · VIVEROS
+    // Alta, edición, activar/desactivar y vínculo exacto con el estudio de BMS.
+    // --------------------------------------------------
+    function formVivero(v) {
+        return v ? { id: v.id, nombre: v.nombre, tipo: v.tipo, lugar: v.lugar, temporada: v.temporada,
+                     fecha_siembra: v.fecha_siembra, activo: v.activo, study_dbid: v.study_dbid ? String(v.study_dbid) : '' }
+                 : { id: null, nombre: '', tipo: 'Self', lugar: D.usuario.lugar || '', temporada: estado.viveros.temporada !== 'Todas' ? estado.viveros.temporada: '',
+                     fecha_siembra: aISO(hoy()), activo: true, study_dbid: ''};
+    }
+
+    function renderViveros() {
+        var f = estado.viveros;
+        var temporadas = ['Todas'].concat(unicos(D.viveros.map(function (v) { return v.temporada; })).sort().reverse());
+        var lugares = ['Todos'].concat(unicos(D.viveros.map(function (v) { return v.lugar; })));
+        var lista = D.viveros.filter(function (v) {
+            return (f.temporada === 'Todas' || v.temporada === f.temporada) && (f.lugar === 'Todos' || v.lugar === f.lugar) &&
+                (f.ver === 'todos' || (f.ver === 'activos') === v.activo);
+        }).sort(porNombre);
+        var sinVincular = lista.filter(function (v) { return v.activo && !v.study_dbid; });
+
+        return '' +
+            '<header class="page-head">' +
+                '<div><div class="eyebrow">Viveros · datos de ejemplo</div><h1>Viveros</h1>' +
+                    '<p class="lead">Da de alta los viveros de cada temporada y vincúlalos con su estudio de BMS. La subida nocturna usa ese número exacto, ya no busca por nombre.</p></div>' +
+                '<button type="button" class="btn btn-primary" data-action="viv-nuevo">+ Nuevo vivero</button>' +
+            '</header>' +
+
+            (f.form ? formularioVivero(f.form) : '') +
+
+            '<section class="card">' +
+                '<div class="card-head">' +
+                    '<div class="field-inline">' +
+                        '<label class="field">Temporada<select data-bind="viveros.temporada">' + opciones(temporadas, f.temporada) + '</select></label>' +
+                        '<label class="field">Lugar<select data-bind="viveros.lugar">' + opciones(lugares, f.lugar) + '</select></label>' +
+                        '<div class="field">Mostrar<div class="seg">' +
+                            [['activos', 'Activos'], ['inactivos', 'Inactivos'], ['todos', 'Todos']].map(function (o) {
+                                return '<button type="button" class="verde" data-action="viv-ver" data-valor="' + o[0] + '" aria-pressed="' + (f.ver === o[0]) + '">' + o[1] + '</button>';
+                            }).join('') +
+                        '</div></div>' +
+                    '</div>' +
+                    '<span class="kpi-sub">' + lista.length + ' vivero(s)</span>' +
+                '</div>' +
+                (sinVincular.length ? '<div class="notice warn"><b>' + sinVincular.length + ' vivero(s) activo(s) sin estudio de BMS.</b> No se subirán a BMS hasta vincularlos: ' +
+                    sinVincular.map(function (v) { return esc(v.nombre); }).join(', ') + '.</div>' : '') +
+                (lista.length ?
+                    '<div class="table-wrap"><table style="min-width:760px"><thead><tr><th>Vivero</th><th>Siembra</th><th>Estudio en BMS</th><th>Estado</th><th><span class="oculto">Acciones</span></th></tr></thead><tbody>' +
+                    lista.map(function (v) {
+                        var e = v.study_dbid ? estudioPorId(v.study_dbid) : null;
+                        return '<tr' + (v.activo ? '' : ' class="fila-inactiva"') + '>' +
+                            '<td><div class="mono" style="font-weight:500">' + esc(v.nombre) + '</div><div class="kpi-sub">' + esc(v.tipo + ' · ' + v.lugar + ' · ' + v.temporada) + '</div></td>' +
+                            '<td style="white-space:nowrap">' + esc(ddmmaaaa(v.fecha_siembra)) + '<div class="kpi-sub">' + ddsDe(v) + ' DDS</div></td>' +
+                            '<td>' + (v.study_dbid 
+                                ? '<span class="pill ok">Estudio ' + v.study_dbid + '</span>' + (e && e.nombre !== v.nombre ? '<div class="kpi-sub" style="margin-top:4px">En BMS: ' + esc(e.nombre) + '</div>' : '')
+                                : '<span class="pill warn">Sin vincular</span>') + '</td>' +
+                            '<td>' + (v.activo ? '<span class="pill ok">Activo</span>' : '<span class="pill info">Inactivo</span>') + '</td>' +
+                            '<td style="text-align:right;white-space:nowrap">' +
+                                '<button type="button" class="btn btn-sm" data-action="viv-editar" data-valor="' + v.id + '">' + (v.study_dbid ? 'Editar' : 'Vincular') + '</button> ' +
+                                '<button type="button" class="btn btn-sm" data-action="viv-activo" data-valor="' + v.id + '">' + (v.activo ? 'Desactivar' : 'Activar') + '</button>' +
+                            '</td></tr>';
+                        }).join('') + '</tbody></table></div>'
+                        : '<div class="notice muted">No hay viveros con este filtro.</div>') +
+                    '</section>';
+    }
+
+    function formularioVivero(fv) { 
+        var cat = D.catalogos;
+        var lugares = unicos(D.viveros.map(function (v) { return v.lugar; }));
+        var estudios = D.estudiosBMS.filter(function (e) { return !fv.temporada || e.temporada === fv.temporada; });
+        var elegido = fv.study_dbid ? estudioPorId(Number(fv.study_dbid)): null;
+        var dds = fv.fecha_siembra ? diasEntre(deISO(fv.fecha_siembra), hoy()) : null;
+
+        return '<section class="card form-vivero">' +
+            '<div class="card-head"><h2>' + (fv.id ? 'Editar vivero' : 'Nuevo vivero') + '</h2>' +
+                '<button type="button" class="btn btn-sm" data-action="viv-cancelar">Cancelar</button></div>' +
+            '<div class="grid-form">' +
+                '<label class="field ancho">Nombre del vivero<input type="text" data-bind="viveros.form.nombre" value="' + esc(fv.nombre) + '" placeholder="Ej: 12_VIVERO_SELF_2026C_6" autocomplete="off"></label>' +
+                '<div class="field">Tipo<div class="seg">' + cat.tiposVivero.map(function (t) {
+                    return '<button type="button" class="verde" data-action="viv-tipo" data-valor="' + esc(t) + '" aria-pressed="' + (fv.tipo === t) + '">' + esc(t) + '</button>';
+                }).join('') + '</div></div>' +
+                '<label class="field">Lugar<select data-bind="viveros.form.lugar">' + opciones(lugares, fv.lugar) + '</select></label>' +
+                '<label class="field">Temporada<input type="text" data-bind="viveros.form.temporada" value="' + esc(fv.temporada) + '" placeholder="Ej: 2026C" maxlength="5"></label>' +
+                '<label class="field">Fecha de siembra<input type="date" data-bind="viveros.form.fecha_siembra" value="' + esc(fv.fecha_siembra) + '" max="' + aISO(hoy()) + '">' +
+                    '<span class="kpi-sub" style="font-weight:400">' + (dds !== null && dds >= 0 ? 'Hoy: ' + dds + ' DDS' : '') + '</span></label>' +
+                '<div class="field">¿Activo?<div class="seg">' +
+                    '<button type="button" class="si" data-action="viv-form-activo" data-valor="1" aria-pressed="' + fv.activo + '">Sí</button>' +
+                    '<button type="button" class="no" data-action="viv-form-activo" data-valor="0" aria-pressed="' + !fv.activo + '">No</button>' +
+                '</div></div>' +
+                '<label class="field ancho">Estudio en BMS<select data-bind="viveros.form.study_dbid"><option value="">- Sin vincular por ahora -</option>' +
+                    estudios.map(function (e) {
+                        var usado = viveroConEstudio(e.study_dbid, fv.id);
+                        return '<option value="' + e.study_dbid + '"' + (String(e.study_dbid) === fv.study_dbid ? ' selected' : '') + (usado ? ' disabled' : '') + '>' +
+                            e.study_dbid + ' · ' + esc(e.nombre) + (usado ? ' (ya vinculado a ' + esc(usado.nombre) + ')' : '') + '</option>';
+                    }).join('') + '</select>' +
+                    '<span class="kpi-sub" style="font-weight:400">Elige el estudio exacto. Solo se muestran los de la temporada ' + esc(fv.temporada || '') + '.</span></label>' +
+                '</div>' +
+                (elegido && elegido.nombre !== fv.nombre.trim() ? '<div class="notice warn">El estudio elegido se llama <b>' + esc(elegido.nombre) + '</b> en BMS y el vivero <b>' + esc(fv.nombre || '(sin nombre)') + '</b>. Verifica que sea correcto antes de guardar.</div>': '') +
+                (elegido && elegido.nombre === fv.nombre.trim() ? '<div class="notice muted">✓ El nombre coincide con el estudio de BMS.</div>' : '') +
+                '<div class="field-inline"><button type="button" class="btn btn-primary" data-action="viv-guardar">' + (fv.id ? 'Guardar cambios' : 'Crear vivero') + '</button></div>' +
+            '</section>';
+    }
+
+    function guardarVivero() {
+        var fv = estado.viveros.form;
+        var nombre = fv.nombre.trim(), temporada = fv.temporada.trim().toUpperCase();
+        if (!nombre) return toast('Escribe el nombre del vivero', true);
+        if (!/^\d{4}[A-Z]$/.test(temporada)) return toast('La temporada debe tener el formato 2026C', true);
+        if (!fv.lugar) return toast('Elige el lugar', true);
+        if (!fv.fecha_siembra) return toast('Indica la fecha de siembra', true);
+        if (fv.fecha_siembra > aISO(hoy())) return toast('La fecha de siembra no puede ser futura', true);
+        var repetido = D.viveros.filter(function (v) { return v.id !== fv.id && v.temporada === temporada && v.nombre.toLowerCase() === nombre.toLowerCase(); })[0];
+        if (repetido) return toast('Ya existe un vivero con ese nombre ' + temporada, true);
+        var study = fv.study_dbid ? Number(fv.study_dbid) : null;
+        if (study && viveroConEstudio(study, fv.id)) return toast('Ese estudio de BMS ya está vinculado a otro vivero', true);
+
+        var datos = { nombre: nombre, tipo: fv.tipo, lugar: fv.lugar, temporada: temporada, fecha_siembra: fv.fecha_siembra, activo: fv.activo, study_dbid: study };
+        if (fv.id){
+            // SUPABASE: update viveros set ... where id = fv.id
+            Object.assign(viveroPorId(fv.id), datos);
+            toast('Vivero actualizado');
+        } else {
+            //SUPABASE: insert into viveros (...) returning id
+            datos.id = D.viveros.reduce(function (m, v) { return Math.max(m, v.id); }, 0) + 1;
+            D.viveros.push(datos);
+            toast('Vivero creado' + (study ? '' : ' · recuerda vincularlo con BMS'));
+        }
+        estado.viveros.form = null;
+        render();
+     }
+    // --------------------------------------------------
     // PANTALLA 4 · CAPTURA EN CAMPO
     // --------------------------------------------------
     function renderCaptura() {
         var c = estado.captura;
         var hoyISO = aISO(hoy());
-        var viveros = viverosActivos();
         var v = c.viveroId ? viveroPorId(c.viveroId) : null;
         var esRiego = c.modo === 'riego';
         var previos = v && esRiego ? riegosDe(v.id, c.fecha) : [];
         var cat = D.catalogos;
+        
+        // Filtro por lugar: con muchos viveros, cada equipo ve solo los de su lagar
+        var activos = viverosActivos();
+        var lugaresCap = unicos(activos.map(function (x) { return x.lugar; }));
+        var lugarCap = lugaresCap.indexOf(estado.capturaLugar) >= 0 ? estado.capturaLugar : 'Todos';
+        var viveros = activos.filter(function (x) { return lugarCap === 'Todos' || x.lugar === lugarCap; }).sort(porNombre);
 
         var red = estado.enLinea
             ? (D.pendientesEnvio ? '<div class="estado-red offline">' + D.pendientesEnvio + ' registros pendientes de enviar</div>' : '<div class="estado-red online">En línea · todo enviado</div>')
             : '<div class="estado-red offline">Sin señal · ' + D.pendientesEnvio + ' registros se enviarán al volver la conexión</div>';
 
+        var  chipsLugar = lugaresCap.length > 1 ? '<div class="chips">' + lugaresCap.concat(['Todos']).map(function (l) {
+            return '<button type="button" data-action="cap-lugar" data-valor="' + esc(l) + '" aria-pressed="' + (lugarCap === l) + '">' + esc(l) + '</button>';
+        }).join('') + '</div>' : '';
+
         var listaViveros = viveros.map(function (x) {
-            var riegoHoy = riegosDe(x.id, hoyISO)[0];
-            var sub = ddsDe(x) + ' DDS  · ' + x.lugar + ' · '  + (riegoHoy ? 'Riego de hoy registrado (' + horaDe(riegoHoy.marca_temporal) + ')' :  'Sin riego hoy');
-            return '<button type="button" class="vivero-btn" data-action="cap-vivero" data-valor="' + x.id + '" aria-pressed="' + (c.viveroId === x.id) + '">' +
+            var riegosHoy = riegosDe(x.id, hoyISO)[0];
+            var sub = ddsDe(x) + ' DDS · ' + (lugarCap === 'Todos' ? x.lugar + ' · ' : '') + (riegosHoy ? 'Riego de hoy ✓ ' + horaDe(riegosHoy.marca_temporal) : 'Sin riego hoy');
+            return '<button type="button" class="vivero-btn' + (riegosHoy ? ' hecho' : '') +  '" data-action="cap-vivero" data-valor="' + x.id + '" aria-pressed="' + (c.viveroId === x.id) + '">' +
                 '<span class="mono">' + esc(x.nombre) + '</span><small>' + esc(sub) + '</small></button>';
         }).join('');
 
         var cuerpo = !v ? '' : (esRiego ? camposRiego(c, previos, cat) : camposAplicacion(c, v, cat));
-        var etiquetaGuardar = esRiego ? (previos.length ? 'Guardar segundo riego' : 'Guardar riego') : 'Guardar aplicación';
-
+        var etiquetaGuardar = esRiego ? (previos.length ? 'Guardar segundo riego ' : 'Guardar riego') : 'Guardar aplicación';
+        
         return '' +
-            '<div class="captura">' +
+            '<div class="captura">' + 
                 '<div class="captura-head">' +
-                    '<div><div style="font-size:17px;font-weight:700">Captura en campo</div><small>' + esc(D.usuario.nombre) + '  · el responsable se llena solo</small></div>' +
+                    '<div><div style="font-size:17px;font-weight:700">Captura en campo</div><small>' + esc(D.usuario.nombre) + ' · el responsable se llena solo</small></div>' +
                     red +
                 '</div>' +
                 '<div class="seg" role="group" aria-label="Tipo de registro">' +
@@ -481,14 +628,20 @@
                     '<button type="button" class="verde" data-action="cap-modo" data-valor="apli" aria-pressed="' + !esRiego + '">Aplicación</button>' +
                 '</div>' +
                 '<div class="captura-cuerpo">' +
-                    '<div class="field captura-lista">Vivero<div class="lista-viveros">' + listaViveros + '</div></div>' +
+                    '<div class="field captura-lista' + (v ? ' con-seleccion' : '') + '">' +
+                        '<span>Vivero <span class="cuenta">(' + viveros.length + ')</span></span>' +
+                        chipsLugar +
+                        '<div class="lista-viveros">' + listaViveros + '</div>' +
+                        // En el teléfono, al elegir un vivero la lista se contrae y aparece este botón
+                        '<button type="button" class="btn btn-sm cambiar-vivero" data-action="cap-cambiar">Cambiar vivero</button>' +
+                    '</div>' +
                     '<div class="captura-form">' +
-                (v ? cuerpo : '<div class="notice muted">Elige un vivero para continuar.</div>') +
-                (v ? '<label class="field">Observaciones<textarea data-bind="captura.obs" placeholder="Condiciones, notas...">' + esc(c.obs) + '</textarea></label>' : '') +
-                (v ? '<button type="button" class="btn-guardar ' + (esRiego ? 'riego' : 'apli') + '" data-action="cap-guardar">' + etiquetaGuardar + '</button>' : '') +
+                        (v ? cuerpo : '<div class="notice muted">Elige un vivero para continuar.</div>') +
+                        (v ? '<label class="field">Observaciones<textarea data-bind="captura.obs" placeholder="Condiciones, notas...">' + esc(c.obs) + '</textarea></label>' : '') +
+                        ( v ? '<button type="button" class="btn-guardar ' + (esRiego ? 'riego' : 'apli') + '" data-action="cap-guardar">' + etiquetaGuardar + '</button>' : '') +
+                    '</div>' +
                 '</div>' +
-                '</div>' +
-            '</div>';
+            '</div>' ;
     }
 
     function camposRiego(c, previos, cat) {
@@ -581,7 +734,7 @@
     //-------------------------------------------------------------
     // NAVEGACIÓN Y EVENTOS
     //-------------------------------------------------------------
-    var rutas = { panel: renderPanel, planes: renderPlanes, sync: renderSync, captura: renderCaptura };
+    var rutas = { panel: renderPanel, planes: renderPlanes, sync: renderSync, captura: renderCaptura, viveros: renderViveros };
     function rutaActual() {
         var r = (location.hash || '').replace(/^#\/?/, '');
         return rutas[r] ? r : 'panel';
@@ -617,7 +770,28 @@
             case 'plan-publicar': toast('Diseño: aqui se guardaría la nueva versión en Supabase'); break;
             case 'plan-borrador': toast('Diseño: aquí se guardaría el borrador en Supabase'); break;
             case 'sync-ahora': toast('Diseño: aquí se llamaría a la Edge Function de sincronización'); break;
-            case 'sync-accion': toast('Diseño: «' + val + '» para ' + el.getAttribute('data-vivero')); break;
+            case 'sync-accion':
+                if (val === 'Vincular') { estado.viveros.form = formVivero(viveroPorId(Number(el.getAttribute('data-id')))); location.hash = '#/viveros'; break; }
+                toast('Diseño: «' + val + '» para ' + el.getAttribute('data-vivero')); break;
+            case 'cap-lugar':
+                estado.capturaLugar = val;
+                var vSel = viveroPorId(c.viveroId);
+                if (vSel && val !== 'Todos' && vSel.lugar !== val) { c.viveroId = null; c.planNum = ''; }
+                render(); break;
+            case 'cap-cambiar': c.viveroId = null; c.planNum = ''; render(); break;
+            case 'viv-nuevo': estado.viveros.form = formVivero(null); render(); window.scrollTo(0, 0); break;
+            case 'viv-editar': estado.viveros.form = formVivero(viveroPorId(Number(val))); render(); window.scrollTo(0, 0); break;
+            case 'viv-cancelar': estado.viveros.form = null; render(); break;
+            case 'viv-guardar': guardarVivero(); break;
+            case 'viv-tipo': estado.viveros.form.tipo = val; render(); break;
+            case 'viv-form-activo': estado.viveros.form.activo = val === '1'; render(); break;
+            case 'viv-ver': estado.viveros.ver = val; render(); break;
+            case 'viv-activo':
+                // SUPABASE: update viveros set activo = not activo where id = val
+                var vv =viveroPorId(Number(val));
+                vv.activo = !vv.activo;
+                toast(vv.activo ? 'Vivero activado: vuelve a aparecer en Captura' : 'Vivero desactivado: ya no aparece en Captura');
+                render(); break;
             case 'cap-modo': estado.captura = nuevaCaptura(val); estado.captura.viveroId = c.viveroId; render(); break;
             case 'cap-vivero': c.viveroId = Number(val); c.planNum = ''; render(); break;
             case 'cap-set':
@@ -638,7 +812,7 @@
         if (!b) return;
         asignar(b, el.value);
         if (b === 'planes.lugar' || b === 'planes.temporada') { estado.planes.archivo = null; estado.planes.filas = null; }
-        if (el.tagName === 'SELECT' || el.type === 'date') render();
+        if (el.tagName === 'SELECT' || el.type === 'date' || b.indexOf('viveros.form.') === 0) render();
     });
 
     //texto libre: se guarda sin volver a dibujar (para no perder el foco)

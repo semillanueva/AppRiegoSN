@@ -295,6 +295,25 @@ tr.fila-cambio { background: var(--info-row); }
     .lista-viveros { grid-template-columns: 1fr; max-height: calc(100vh - 240px); overflow: auto; padding-right: 4px; }
 }
 
+/* Lista de viveros en Captura: con muchos viveros no se amontona */
+.cuenta { font-weight: 400; color: var(--label); }
+.vivero-btn.hecho { background: var(--surface-soft); }
+.vivero-btn.hecho small { color: var(--ok-fg); }
+.cambiar-vivero { display: none; align-self: flex-start; }
+@media (max-width: 599px) {
+    /*En el teléfono, al elegir un vivero solo queda visible ese y el botón "Cambiar vivero" */
+    .con-seleccion .vivero-btn[aria-pressed=false] { display: none; }
+    .con-seleccion .chips { display: none; }
+    .con-seleccion .cambiar-vivero { display: inline-flex; }
+}
+
+/*-------------------- Pantalla Viveros ------------------------- */
+.grid-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px ;}
+.grid-form .ancho { grid-column: 1 / -1; }
+@media (max-width: 820px) { .grid-form { grid-template-columns: minmax(0, 1fr); } }
+.form-vivero { border: 2px solid var(--green); }
+tr.fila-inactiva td { color: var(--muted); background: var(--surface-soft); }
+
 /* ------------------- Toast ------------------- */
 .toast {
     position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
