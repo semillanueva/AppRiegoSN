@@ -381,7 +381,31 @@ tr.fila-inactiva td { color: var(--muted); background: var(--surface-soft); }
     return haceDias(diasAtras) + 'T' + hora + ':00-06:00';
   }
 
-  // Plan de aplicaciones base (el mismo de Ovejero 2026B)
+  // Plan real de Centro Experimental 2026C:
+  // "Plan de Protección de Viveros · Ciclo septiembre–enero 2026-2027" (18 aplicaciones).
+  // Columnas: [#, dds_inicio, dds_fin, dds_ventana, etapa, categoria, producto, dosis, observacion]
+  var filasPlanCE = [
+    [1, 0, 0, '0 DDS', 'Siembra', 'Tto. de Semilla', 'Fortenza Maxx', '6–8 ml/Kg semilla', ''],
+    [2, 0, 0, '0 DDS', 'V0 (pre-emergente)', 'Control de Malezas', 'Gesaprim 90 + Glifosato', '1.0–1.5 kg/mz + 2.0 L/mz', ''],
+    [3, 2, 3, '2–3 DDS', 'V0', 'Gusano nochero y plagas del suelo', 'Tregua 45 EC', '1.5–2.0 L/mz', ''],
+    [4, 8, 8, '8 DDS', 'V2–V3', 'Fertilización', 'Triple 15 Yara', '4 qq/mz', ''],
+    [5, 8, 8, '8 DDS', 'V2–V3', 'Plaga — Spiroplasma (1ra)', 'Ampligo + Verdabis + Bayfolan Ambition', '0.15 L/mz + 0.15 L/mz + 1 L/mz', ''],
+    [6, 15, 18, '15–18 DDS', 'V4–V5', 'Plaga — Spiroplasma (2da)', 'Muralla + Ampligo + Bayfolan/Omex Bio20', '0.15 L/mz + 0.15 L/mz + 1 L/mz', 'APLICACIÓN OPCIONAL según presión'],
+    [7, 18, 20, '18–20 DDS', 'V5–V6', 'Control de Malezas', 'Control manual de malezas', '1 pasada cada 10–20 días', 'Inicia control de malezas manual'],
+    [8, 23, 25, '23–25 DDS', 'V6–V7', 'Plaga — Spiroplasma / Spodoptera', 'Ampligo + Winner + Amistar + Bayfolan/Omex Bio20', '0.15 + 0.20 + 0.25 + 1 L/mz', ''],
+    [9, 25, 30, '25–30 DDS', 'V7–V9', 'Fertilización', 'Nitrostend + S', '4 qq/mz', ''],
+    [10, 25, 30, '25–30 DDS', 'V8–V9', 'Fungicida (1ra)', 'Amistar + Nativo', '0.50–0.70 + 0.15 L/mz', 'TSC / Helmintosporium'],
+    [11, 28, 30, '28–30 DDS', 'V8–V9', 'Plaga — Spodoptera', 'DeminFit + Certero + Muralla', '0.20 + 0.25 + 0.20 L/mz', ''],
+    [12, 35, 35, '35 DDS', 'V11–V12', 'Plaga — Spodoptera', 'Ampligo + Engeo', '0.20 + 0.20 L/mz', ''],
+    [13, 35, 40, '35–40 DDS', 'V12', 'Fertilización', 'Nitrostend + S', '3 qq/mz', ''],
+    [14, 45, 50, '45–50 DDS', 'VT', 'Fungicida (2da)', 'Amistar + Nativo', '0.50–0.70 + 0.15 L/mz', 'TSC / Helmintosporium'],
+    [15, 45, 50, '45–50 DDS', 'VT', 'Plaga — Spodoptera / Ácaros', 'Winner o DeminFit + Overon Speed', '0.20 + 0.20 L/mz', ''],
+    [16, 60, 65, '60–65 DDS', 'R1–R2', 'Fungicida (3ra)', 'Amistar + Nativo', '0.50–0.70 + 0.15 L/mz', ''],
+    [17, 65, 65, '65 DDS', 'R3–R4', 'Control de Malezas', 'Basta', '2 L/mz', ''],
+    [18, 60, 65, '60–65 DDS', 'R3–R4', 'Plaga — Spodoptera / Ácaros', 'Winner + Overon Speed', '0.20 + 0.20 L/mz', '']
+  ];
+
+  // Plan anterior de Ovejero 2026B (sigue vigente mientras haya viveros 2026B en cosecha)
   var filasPlanBase = [
     [1, 0, 0, '0 DDS', 'Siembra', 'Tto. Semilla', 'Fortenza Maxx', '6–8 ml / Kg semilla', ''],
     [2, 0, 3, '0–3 DDS', 'V0', 'Herbicida preemergente', 'Gesaprim 90 + Glifosato', '1.0–1.5 kg/mz + 2.0 L/mz', ''],
@@ -411,13 +435,13 @@ tr.fila-inactiva td { color: var(--muted); background: var(--surface-soft); }
     });
   }
 
-  // "Archivo" de ejemplo que se carga en la pantalla Planes:
-  // trae 2 cambios y 2 errores a propósito para mostrar la validación.
-  var archivo = aFilas(filasPlanBase);
-  archivo[5] = Object.assign({}, archivo[5], { dosis: '7 qq/mz' });                     // #6 cambia
-  archivo[7] = Object.assign({}, archivo[7], { dds_inicio: 18, dds_fin: 15, dds_ventana: '18–15 DDS' }); // #8 error
-  archivo[9] = Object.assign({}, archivo[9], { producto: 'Ampligo + Winner + Amistar Top + Bayfolan' }); // #10 cambia
-  archivo[12] = Object.assign({}, archivo[12], { num: 12 });                              // # repetido
+  // "Archivo" de ejemplo que se carga en la pantalla Planes: una supuesta versión 2 del plan
+  // de Centro Experimental. Trae 2 cambios y 2 errores PUESTOS A PROPÓSITO para mostrar la validación.
+  var archivo = aFilas(filasPlanCE);
+  archivo[3] = Object.assign({}, archivo[3], { dosis: '5 qq/mz' });                       // #4 cambia la dosis
+  archivo[5] = Object.assign({}, archivo[5], { dds_inicio: 18, dds_fin: 15, dds_ventana: '18–15 DDS' }); // #6 error: DDS al revés
+  archivo[10] = Object.assign({}, archivo[10], { num: 10 });                              // #11 error: repite el número 10
+  archivo[11] = Object.assign({}, archivo[11], { producto: 'Ampligo + Overon Speed' });   // #12 cambia el producto
 
   window.DATA = {
     usuario: { nombre: 'Alessandro', rol: 'Administrador', lugar: 'Centro Experimental' },
@@ -425,7 +449,7 @@ tr.fila-inactiva td { color: var(--muted); background: var(--surface-soft); }
     viveros: [
       { id: 21, nombre: '01_VIVERO_SELF_2026C_1', tipo: 'Self', lugar: 'Centro Experimental', temporada: '2026C', fecha_siembra: haceDias(16), activo: true, study_dbid: 1201 },
       { id: 22, nombre: '02_VIVERO_CROSS_2026C_1', tipo: 'Cross', lugar: 'Centro Experimental', temporada: '2026C', fecha_siembra: haceDias(14), activo: true, study_dbid: 1202 },
-      { id: 23, nombre: '[VIVERO NUEVO 2026C]', tipo: 'Cross', lugar: 'Centro Experimental', temporada: '2026C', fecha_siembra: haceDias(2), activo: true, study_dbid: null },
+      { id: 23, nombre: '11_VIVERO_NUEVO_2026C', tipo: 'Cross', lugar: 'Centro Experimental', temporada: '2026C', fecha_siembra: haceDias(2), activo: true, study_dbid: null },
       { id: 1, nombre: '01 SLFAFCIM_2026B', tipo: 'Self', lugar: 'Ovejero', temporada: '2026B', fecha_siembra: '2026-05-07', activo: true, study_dbid: 1058 },
       { id: 2, nombre: '02 BCRAFCIM_2026B', tipo: 'Cross', lugar: 'Ovejero', temporada: '2026B', fecha_siembra: '2026-05-11', activo: true, study_dbid: 1059 },
       { id: 3, nombre: '03 BC1_BlueLines_2026B', tipo: 'Cross', lugar: 'Ovejero', temporada: '2026B', fecha_siembra: '2026-05-18', activo: true, study_dbid: 1060 }
@@ -433,12 +457,12 @@ tr.fila-inactiva td { color: var(--muted); background: var(--surface-soft); }
 
     planes: [
       { id: 'ce-2026c-v1', tipo: 'aplicaciones', lugar: 'Centro Experimental', temporada: '2026C', version: 1, estado: 'vigente',
-        nota: 'Provisional: copia del plan de Ovejero 2026B hasta que el equipo técnico confirme el definitivo.', filas: aFilas(filasPlanBase) },
+        nota: 'Plan de Protección de Viveros · ciclo septiembre–enero 2026-2027.', filas: aFilas(filasPlanCE) },
       { id: 'ov-2026b-v1', tipo: 'aplicaciones', lugar: 'Ovejero', temporada: '2026B', version: 1, estado: 'vigente',
         nota: 'Sigue vigente mientras haya viveros 2026B en cosecha.', filas: aFilas(filasPlanBase) }
     ],
 
-    planArchivoEjemplo: { nombre: 'Plan_CentroExperimental_2026C.xlsx', filas: archivo },
+    planArchivoEjemplo: { nombre: 'Plan_Proteccion_Viveros_2026-2027_v2.xlsx', filas: archivo },
 
     registro_aplicaciones: [
       { vivero_id: 21, num_aplicacion: '1', realizado: 'SI', fecha_real: haceDias(16), marca_temporal: marca(16, '07:10') },
@@ -507,7 +531,7 @@ tr.fila-inactiva td { color: var(--muted); background: var(--surface-soft); }
 
     // Estudios que existen en BMS. Sirven para vincular cada vivero con su estudio exacto
     // (así la subida nocturna ya no busca por nombre).
-    //SUPABASE: se llenaría con la lista de estudios que trae clever-fuction desde BMS.
+    // SUPABASE: se llenaría con la lista de estudios que trae clever-function desde BMS.
     estudiosBMS: [
       { study_dbid: 1058, nombre: '01 SLFAFCIM_2026B', temporada: '2026B' },
       { study_dbid: 1059, nombre: '02 BCRAFCIM_2026B', temporada: '2026B' },
@@ -538,8 +562,8 @@ tr.fila-inactiva td { color: var(--muted); background: var(--surface-soft); }
     [30, '09_VIVERO_SELF_2026C_5', 'Self', 5, null],
     [31, '10_VIVERO_BC_2026C_1', 'Cross', 4, 1210]
   ];
-  // A estos viveros se les generan registros "al día": riegos de los último 7 días
-  // y las aplicaciones del plan cuya ventana ya pasó, para que el panel se llene de atrasos.
+  // A estos viveros se les generan registros "al día": riegos de los últimos 7 días
+  // y las aplicaciones del plan cuya ventana ya pasó, para que el panel no se llene de atrasos.
   var D = window.DATA;
   extra2026C.forEach(function (x) {
     var dds = x[3];
@@ -548,7 +572,7 @@ tr.fila-inactiva td { color: var(--muted); background: var(--surface-soft); }
     for (var d = Math.min(6, dds); d >= 1; d--) {
       D.registro_riegos.push({ vivero_id: x[0], fecha_riego: haceDias(d), riego_efectivo: 'SI', tipo_riego: 'Goteo', razon_no: '', marca_temporal: marca(d, '06:50') });
     }
-    filasPlanBase.forEach(function (f) {
+    filasPlanCE.forEach(function (f) {
       if (f[2] < dds) {
         D.registro_aplicaciones.push({ vivero_id: x[0], num_aplicacion: String(f[0]), realizado: 'SI',
           fecha_real: haceDias(dds - f[1]), marca_temporal: marca(dds - f[1], '07:30') });
@@ -1124,7 +1148,7 @@ tr.fila-inactiva td { color: var(--muted); background: var(--surface-soft); }
         if (!fv.fecha_siembra) return toast('Indica la fecha de siembra', true);
         if (fv.fecha_siembra > aISO(hoy())) return toast('La fecha de siembra no puede ser futura', true);
         var repetido = D.viveros.filter(function (v) { return v.id !== fv.id && v.temporada === temporada && v.nombre.toLowerCase() === nombre.toLowerCase(); })[0];
-        if (repetido) return toast('Ya existe un vivero con ese nombre en ' + temporada, true);
+        if (repetido) return toast('Ya existe un vivero con ese nombre ' + temporada, true);
         var study = fv.study_dbid ? Number(fv.study_dbid) : null;
         if (study && viveroConEstudio(study, fv.id)) return toast('Ese estudio de BMS ya está vinculado a otro vivero', true);
 
