@@ -9,6 +9,8 @@
     
     var D = window.DATA;
     var vista = document.getElementById('view');
+    // Cada registro necesita un id para corregirlo o anularlo (en Supabase es submission_id).
+    D.registro_riegos.concat(D.registro_aplicaciones).forEach(function (r) { if (!r.submission_id) r.submission_id = nuevoId(); });
 
     //---------------  Utilidades ----------------------------------
     function esc(s) { 
@@ -64,9 +66,12 @@
         })[0] || null;
     }
     function aplicacionesHechas(viveroId) {
-        return D.registro_aplicaciones.filter(function (r) { return r.vivero_id === viveroId && r.realizado !== 'NO'; })
+        return aplicacionesValidas().filter(function (r) { return r.vivero_id === viveroId && r.realizado !== 'NO'; })
             .map(function (r) { return String(r.num_aplicacion); });
     }
+    // Lo anulado no cuenta en ningún indicador ni se sube a BMS
+    function riegosValidos() { return D.registro_riegos.filter(function (r) { return !r.anulado; }); }
+    function aplicacionesValidas() { return D.registro_aplicaciones.filter(function (r) { return !r.anulado; }); }
     function estudioPorId(id) { return D.estudiosBMS.filter(function (e) { return e.study_dbid === id; })[0];}
     // Vivero que ya se usa un estudio en BMS (sin contar el que ya se está editando)
     function viveroConEstudio(studyId, exceptoId) {
@@ -74,7 +79,7 @@
     }
     function porNombre(a, b) { return a.temporada === b.temporada ? a.nombre.localeCompare(b.nombre) : (a.temporada < b.temporada ? 1 : -1); }
     function riegosDe(viveroId, fechaISO) {
-        return D.registro_riegos.filter(function (r) { return r.vivero_id === viveroId && r.fecha_riego === fechaISO; });
+        return riegosValidos().filter(function (r) { return r.vivero_id === viveroId && r.fecha_riego === fechaISO; });
     }
 
     //Estado de una celda de la cuadrícula de riego
@@ -97,25 +102,52 @@
             var estado = dds > f.dds_fin ? 'atrasada' : (dds >= f.dds_inicio ? 'ventana' : 'proxima');
             var ini = sumarDias(siembra, f.dds_inicio), fin = sumarDias(siembra, f.dds_fin);
             return {
-                vivero: v.nombre, num: f.num, producto: f.producto, opcional: /opc/i.test(f.observacion),
+                vivero: v.nombre, viveroId: v.id, num: f.num, producto: f.producto, opcional: /opc/i.test(f.observacion),
                 ventana: f.dds_ventana + ' · ' + (f.dds_inicio === f.dds_fin ? ddmm(ini) : ddmm(ini) + '-' + ddmm(fin)),
                 estado: estado, diasAtraso: dds - f.dds_fin
             };
         });
     }
 
+    // Cumplimiento de aplicaciones de un vivero
+    // Cuenta las aplicaciones del plan cuya ventana ya empezó y que ya se hicieron o ya vencieron.
+    // A tiempo = se hizo (SI O PARCIAL) entre el inicio y el fin de la ventana, con MARGEN_DIAS de tolerancia
+    // Las opcionales que no se hicieron no cuentan en contra.
+    var MARGEN_DIAS = 2;
+    function cumplimientoAplicaciones(v) {
+        var res = { evaluadas: 0, aTiempo: 0, fuera: 0, sinHacer: 0 };
+        var plan = planVigente('aplicaciones', v.lugar, v.temporada);
+        if (!plan) return res;
+        var dds = ddsDe(v), siembra = deISO(v.fecha_siembra);
+        var regs = aplicacionesValidas().filter(function (r) { return r.vivero_id === v.id; })
+            .sort(function (a, b) { return a.marca_temporal < b.marca_temporal ? 1 : -1; });
+        plan.filas.forEach(function (f) {
+            if (f.dds_inicio > dds) return;                                 // todavía no empieza
+            var reg = regs.filter(function (r) { return r.num_aplicacion === String(f.num); })[0]; //el más reciente
+            var hecha = reg && reg.realizado !== 'NO';
+            if (!hecha && dds <= f.dds_fin + MARGEN_DIAS) return;
+            if (!hecha && /opc/i.test(f.observacion)) return;
+            res.evaluadas ++;
+            if (!hecha) { res.sinHacer++; return; }
+            var d = diasEntre(siembra, deISO(reg.fecha_real));
+            if (d >= f.dds_inicio  - MARGEN_DIAS && d <= f.dds_fin + MARGEN_DIAS) res.aTiempo++; else res.fuera++;
+        });
+        return res;
+    }
+
     //----------- Estado de la interfaz ------------------------------------------
     var estado = {
-        filtro: { temporada: '2026C', lugar: 'Centro Experimental' },
+        filtro: { temporada: '2026C', lugar: 'Centro Experimental', verCercanas: 'urgentes' },
         planes: { tipo: 'aplicaciones', lugar: 'Centro Experimental', temporada: '2026C', archivo: null, filas: null },
         captura: nuevaCaptura('riego'),
         capturaLugar: D.usuario.lugar || 'Todos',
         viveros: { temporada: '2026C', lugar: 'Todos', ver: 'activos', form: null },
+        registros: nuevoFiltroRegistros(),
         enLinea: navigator.onLine
     };
     function nuevaCaptura(modo) {
         return { modo: modo, viveroId: null, fecha: aISO(hoy()), efectivo: '', tipoRiego: '', razon: '',
-            planNum: '', realizado: '', fechaReal: aISO(hoy()), cambio: '', extraEtapa: '', extraProducto: '', extraDosis: '', obs: ''};
+                 planNum: '', realizado: '', fechaReal: aISO(hoy()), cambio: '', cambioDosis: false, cambioProducto: false, extraEtapa: '', extraProducto: '', extraDosis: '', obs: ''};
     }
 
     // ----------------------------------------------------
@@ -136,9 +168,23 @@
         var orden = { atrasada: 0, ventana: 1, proxima: 2 };
         cercanas.sort(function (a, b) { return orden[a.estado] - orden[b.estado] || a.num - b.num; });
         var atrasadas = cercanas.filter(function (c) { return c.estado === 'atrasada'; }).length;
+        // Aplicaciones cercanas agrupadas por vivero: primero los que tienen atrasadas
+        var grupos = viv.map(function (v) {
+            var items = aplicacionesCercanas(v).sort(function (a, b) { return orden[a.estado] - orden[b.estado] || a.num - b.num; });
+            var cuenta = { atrasada: 0, ventana: 0, proxima: 0 };
+            items.forEach(function (c) { cuenta[c.estado]++; });
+            return { v: v, items: items, cuenta: cuenta, cump: cumplimientoAplicaciones(v) }; 
+        }).filter(function (g) { return g.items.length; })
+          .sort(function (a,b) { return b.cuenta.atrasada - a.cuenta.atrasada || porNombre(a.v, b.v); });
+        
+        // Cumplimiento de aplicaciones de todos los viveros del filtro
+        var totApli = { evaluadas: 0, aTiempo: 0 };
+        viv.forEach(function (v) { var c = cumplimientoAplicaciones(v); totApli.evaluadas += c.evaluadas; totApli.aTiempo += c.aTiempo; });
+        var pctApli = totApli.evaluadas ? Math.round(totApli.aTiempo / totApli.evaluadas * 100) : null;
+        var claseApli = pctApli === null ? '' : pctApli >= 90 ? 'good' : pctApli < 75 ? 'bad' : 'warn'; // mismos umbrales que riego
 
-        var riegosHoy = D.registro_riegos.filter(function (r) { return ids.indexOf(r.vivero_id) >=0 && r.fecha_riego === hoyISO; }).length;
-        var apliHoy = D.registro_aplicaciones.filter(function (r) { return ids.indexOf(r.vivero_id) >= 0 && r.fecha_real === hoyISO; }).length;
+        var riegosHoy = riegosValidos().filter(function (r) { return ids.indexOf(r.vivero_id) >=0 && r.fecha_riego === hoyISO; }).length;
+        var apliHoy = aplicacionesValidas().filter(function (r) { return ids.indexOf(r.vivero_id) >= 0 && r.fecha_real === hoyISO; }).length;
 
         var dias = [];
         for (var i = 6; i >= 0; i--) dias.push(sumarDias(hoy(), -i));
@@ -151,7 +197,7 @@
                 if (e === 'N') sinMotivo++;
                 return e;
             });
-            return { vivero: v.nombre, celdas: celdas };
+            return { vivero: v.nombre, id: v.id, celdas: celdas };
         });
         var pctRiego = conDato ? Math.round(cumplidos / conDato * 100) : null;
         var cumplimiento = pctRiego === null ? '-' : pctRiego + ' %';
@@ -186,21 +232,38 @@
                 kpi('Viveros activos', viv.length, f.lugar + ' · ' + f.temporada, '') +
                 kpi('Registros hoy', riegosHoy + apliHoy, riegosHoy + ' riegos · ' + apliHoy + ' aplicaciones', '') +
                 kpi('Aplicaciones atrasadas', atrasadas, 'Fuera de la ventana del plan', atrasadas ? 'bad' : 'good') +
+                kpi('Cumplimiento de aplicaciones', pctApli === null ? '-' : pctApli + ' %',
+                    totApli.aTiempo + ' de ' + totApli.evaluadas + ' a tiempo (±' + MARGEN_DIAS + ' días)', claseApli) +
                 kpi('Cumplimiento de riego', cumplimiento, 'Últimos 7 días, justificados incluidos', claseRiego) +
             '</section>' +
 
             '<section class="row">' +
                 '<div class="card grow-3">' +
-                    '<div class="card-head"><h2>Aplicaciones del plan cercanas a hoy</h2><a href="#/planes">Ver plan vigente</a></div>' +
+                    '<div class="card-head"><h2>Aplicaciones del plan cercanas a hoy</h2>' +
+                        '<div class="field-inline" style="align-items:center">' +
+                            '<div class="seg">' + [['urgentes', 'Atrasadas y en ventana'], ['todas', 'Todas']].map(function (o) {
+                                return '<button type="button" class="verde btn-sm" data-action="panel-cercanas" data-valor="' + o[0] + '" aria-pressed="' + (f.verCercanas === o[0]) + '">' + o[1] + '</button>';
+                            }).join('') + '</div>' +
+                            '<a href="#/planes">Ver plan vigente</a>' +
+                        '</div></div>' +
                     avisosPlan.map(function (p) {
                         return '<div class="notice warn">' + (f.lugar === 'Todos' ? '<b>' + esc(p.lugar) + ':</b> ' : '') + esc(p.nota) + '</div>';
                     }).join('') +
-                    (cercanas.length ?
-                        '<div class="table-wrap"><table style="min-width:560px"><thead><tr><th>Vivero</th><th>#</th><th>Producto</th><th>Ventana</th><th>Estado</th></tr></thead><tbody>' +
-                        cercanas.map(function (c) {
-                            return '<tr><td class="mono">' + esc(c.vivero) + '</td><td>' + c.num + '</td><td>' + esc(c.producto) + 
-                                (c.opcional ? ' <span class="pill warn">Opcional</span>' : '') + '</td><td style="white-space:nowrap">' + esc(c.ventana) +
-                                '</td><td>' + etiquetaEstado[c.estado](c) + '</td></tr>';
+                    (grupos.length ?
+                        '<div class="table-wrap"><table style="min-width:520px"><thead><tr><th>#</th><th>Producto</th><th>Ventana</th><th>Estado</th></tr></thead><tbody>' +
+                        grupos.map(function (g) {
+                            var visibles = f.verCercanas === 'todas' ? g.items : g.items.filter(function (c) { return c.estado !== 'proxima'; });
+                            var pct = g.cump.evaluadas ? Math.round(g.cump.aTiempo / g.cump.evaluadas * 100) + ' %' : '-';
+                            var cab = '<tr class="fila-grupo"><td colspan="4"><a class="mono" href="#/vivero/' + g.v.id + '">' + esc(g.v.nombre) + '</a> ' +
+                                (g.cuenta.atrasada ? '<span class="pill err">' + g.cuenta.atrasada + (g.cuenta.atrasada === 1 ? ' atrasada' : ' atrasadas') + '</span> ' : '') +
+                                (g.cuenta.ventana ? '<span class="pill ok">' + g.cuenta.ventana + ' en ventana</span> ' : '') +
+                                (g.cuenta.proxima && f.verCercanas !== 'todas' ? '<span class="kpi-sub">' + g.cuenta.proxima + (g.cuenta.proxima === 1 ? ' próxima' : ' próximas') + ' · </span>' : '') +
+                                '<span class="kpi-sub">Cumplimiento ' + pct + '</span></td></tr>';
+                            return cab + visibles.map(function (c) {
+                                return '<tr><td>' + c.num + '</td><td>' + esc(c.producto) +
+                                    (c.opcional ? ' <span class="pill warn">Opcional</span>' : '') + '</td><td style="white-space:nowrap">' + esc(c.ventana) +
+                                    '</td><td>' + etiquetaEstado[c.estado](c) + '</td></tr>';
+                            }).join('');
                         }).join('') + '</tbody></table></div>'
                         : '<div class="notice muted">No hay aplicaciones pendientes cerca de la fecha para este filtro.</div>') +
                     '</div>' +
@@ -215,8 +278,8 @@
                     '<div class="card">' +
                         '<h2>Pendientes de revisión</h2>' +
                         '<div class="lista-simple">' +
-                            '<div><span>Posibles duplicados bloqueados</span><b>' + D.duplicadosBloqueados + '</b></div>' +
-                            '<div><span>Riegos «NO» sin motivo (7 días)</span><b>' + sinMotivo + '</b></div>' +
+                            '<div><a href="#/registros" data-action="panel-problemas" data-tipo="ambos">Posibles duplicados bloqueados</a><b>' + D.duplicadosBloqueados + '</b></div>' +
+                            '<div><a href="#/registros" data-action="panel-problemas" data-tipo="riego">Riegos «NO» sin motivo (7 días)</a><b>' + sinMotivo + '</b></div>' +
                             '<div><span>Registros esperando señal en tablets</span><b>' + D.pendientesEnvio + '</b></div>' +
                         '</div>' +
                     '</div>' +
@@ -236,7 +299,7 @@
                 '<div class="table-wrap"><div class="grid-riegos">' +
                 '<div class="fila cab"><span>Vivero</span>' + dias.map(function (d) { return '<span>' + diaCorto(d) + '</span>'; }).join('') + '</div>' +
                 filasRiego.map(function (fr) {
-                    return '<div class="fila"><span class="mono">' + esc(fr.vivero) + '</span>' +
+                    return '<div class="fila"><a class="mono" href="#/vivero/' + fr.id + '">' + esc(fr.vivero) + '</a>' +
                         fr.celdas.map(function (c) { return '<span class="celda ' + c + '">' + letras[c] + '</span>'; }).join('') + '</div>';
                 }).join('') +
                 '</div></div>' 
@@ -429,7 +492,7 @@
                 '<div class="table-wrap"><table style="min-width:860px"><thead><tr><th>Vivero</th><th>Estudio en BMS</th><th>Aplicaciones</th><th>Riegos</th><th>Estado</th><th><span class="oculto">Accion</span></th></tr></thead><tbody>' +
                     r.map(function (x) {
                         var v = viveroPorId(x.vivero_id), e = est[x.estado];
-                        return '<tr><td class="mono">' + esc(v.nombre) + '</td>' +
+                        return '<tr><td><a class="mono" href="#/vivero/' + v.id + '">' + esc(v.nombre) + '</a></td>' +
                             '<td class="kpi-sub">' + (v.study_dbid ? 'Estudio ' + v.study_dbid + ' · instancia confirmada' : 'Sin asignar') + '</td>' +
                             '<td>'  + (x.ap_filas ? x.ap_filas + ' filas' : '-') + '</td><td>' + (x.r_filas ? x.r_filas + ' filas' : '-') + '</td>' +
                             '<td><span class="pill ' + e.cls + '">' + e.txt + '</span>' + (x.error ? '<div class="kpi-sub" style="margin-top:4px">' + esc(x.error) + '</div>' : '') + '</td>' +
@@ -503,7 +566,7 @@
                     lista.map(function (v) {
                         var e = v.study_dbid ? estudioPorId(v.study_dbid) : null;
                         return '<tr' + (v.activo ? '' : ' class="fila-inactiva"') + '>' +
-                            '<td><div class="mono" style="font-weight:500">' + esc(v.nombre) + '</div><div class="kpi-sub">' + esc(v.tipo + ' · ' + v.lugar + ' · ' + v.temporada) + '</div></td>' +
+                            '<td><a class="mono" style="font-weight:500" href="#/vivero/' + v.id + '">' + esc(v.nombre) + '</a><div class="kpi-sub">' + esc(v.tipo + ' · ' + v.lugar + ' · ' + v.temporada) + '</div></td>' +
                             '<td style="white-space:nowrap">' + esc(ddmmaaaa(v.fecha_siembra)) + '<div class="kpi-sub">' + ddsDe(v) + ' DDS</div></td>' +
                             '<td>' + (v.study_dbid 
                                 ? '<span class="pill ok">Estudio ' + v.study_dbid + '</span>' + (e && e.nombre !== v.nombre ? '<div class="kpi-sub" style="margin-top:4px">En BMS: ' + esc(e.nombre) + '</div>' : '')
@@ -549,7 +612,8 @@
                     }).join('') + '</select>' +
                     '<span class="kpi-sub" style="font-weight:400">Elige el estudio exacto. Solo se muestran los de la temporada ' + esc(fv.temporada || '') + '.</span></label>' +
                 '</div>' +
-                (elegido && elegido.nombre !== fv.nombre.trim() ? '<div class="notice warn">El estudio elegido se llama <b>' + esc(elegido.nombre) + '</b> en BMS y el vivero <b>' + esc(fv.nombre || '(sin nombre)') + '</b>. Verifica que sea correcto antes de guardar.</div>': '') +
+                (elegido && elegido.nombre !== fv.nombre.trim() ? '<div class="notice warn">El estudio elegido se llama <b>' + esc(elegido.nombre) + '</b> en BMS y el vivero <b>' + esc(fv.nombre || '(sin nombre)') + '</b>. Verifica que sea correcto antes de guardar.' +
+                    '<div style="margin-top:8px"><button type="button" class="btn btn-sm" data-action="viv-usar-nombre-bms">Usar el nombre de BMS</button></div></div>': '') +
                 (elegido && elegido.nombre === fv.nombre.trim() ? '<div class="notice muted">✓ El nombre coincide con el estudio de BMS.</div>' : '') +
                 '<div class="field-inline"><button type="button" class="btn btn-primary" data-action="viv-guardar">' + (fv.id ? 'Guardar cambios' : 'Crear vivero') + '</button></div>' +
             '</section>';
@@ -582,6 +646,402 @@
         estado.viveros.form = null;
         render();
      }
+
+     // -------------------------------------------------------------
+     // PANTALLA 6 · DETALLE DE UN VIVERO (#/vivero/ID)
+     // Avance contra el plan, riegos, registros y última subida a BMS.
+     // -------------------------------------------------------------
+    function renderDetalleVivero() {
+        var v = viveroPorId(idDeRuta());
+        if (!v) return '<div class="notice warn">No se encontró el vivero. <a href="#/viveros">Volver a Viveros</a></div>';
+
+        var dds = ddsDe(v), siembra = deISO(v.fecha_siembra);
+        var plan = planVigente('aplicaciones', v.lugar, v.temporada);
+        var e = v.study_dbid ? estudioPorId(v.study_dbid) : null;
+        function masReciente(a, b) { return a.marca_temporal < b.marca_temporal ? 1 : -1; }
+
+        // SUPABASE: select * from registro_aplicaciones / registro_riegos where vivero_id = v.id order by marca_temporal desc
+        var regsApli = aplicacionesValidas().filter(function (r) { return r.vivero_id === v.id; }).sort(masReciente);
+        var regsRiego = riegosValidos().filter(function (r) { return r.vivero_id === v.id; }).sort(masReciente);
+
+
+        // ---- Avance contra el plan: estado de cada aplicación ----
+        var filasPlan = (plan ? plan.filas.slice() : [])
+            .sort(function (a, b) { return a.dds_inicio - b.dds_inicio || a.num - b.num; })
+            .map(function (f) {
+                var reg = regsApli.filter(function (r) { return r.num_aplicacion === String(f.num); })[0]; // el más reciente
+                var est = reg ? { SI: 'hecha', PARCIAL: 'parcial', NO: 'no' }[reg.realizado]
+                    : dds > f.dds_fin ? 'atrasada' : dds >= f.dds_inicio ? 'ventana' : 'proxima';
+                return { f: f, reg: reg, est: est }; 
+            });
+                // Mismo cumplimiento de aplicaciones que el Panel
+        var cump = cumplimientoAplicaciones(v);
+        var pctApli = cump.evaluadas ? Math.round(cump.aTiempo / cump.evaluadas * 100) : null;
+        var claseApli = pctApli === null ? '' : pctApli >= 90 ? 'good' : pctApli < 75 ? 'bad' : 'warn';
+        var atrasadas = filasPlan.filter(function (x) { return x.est === 'atrasada'; }).length;
+
+        function pillPlan(x) {
+            if (x.est === 'hecha') return '<span class="pill ok">Hecha · ' + ddmm(deISO(x.reg.fecha_real)) + '</span>';
+            if (x.est === 'parcial') return '<span class="pill warn">Parcial · ' + ddmm(deISO(x.reg.fecha_real)) + '</span>';
+            if (x.est === 'no') return '<span class="pill err">No realizada</span>';
+            if (x.est === 'atrasada') { var n = dds - x.f.dds_fin; return '<span class="pill err">Atrasada ' + n + (n=== 1 ? ' día' : ' días') + '</span>'; }
+            if (x.est === 'ventana') return '<span class="pill ok">En ventana</span>';
+            return '<span class="kpi-sub">Próxima</span>';
+        }
+        var marcaHoy = '<div class="hoy">Hoy · ' + dds + ' DDS</div>', marcaPuesta = false;
+        var lineas = filasPlan.map(function (x) {
+            var f = x.f, ini = sumarDias(siembra, f.dds_inicio), fin = sumarDias(siembra, f.dds_fin);
+            var antes = '';
+            if (!marcaPuesta && f.dds_inicio > dds) { marcaPuesta = true; antes = marcaHoy; }
+            return antes + '<div><b>#' + f.num + '</b><span>' + esc(f.producto) + 
+                (/opc/i.test(f.observacion) ? ' <span class="pill warn">Opcional</span>' : '') +
+                '<small>' + esc(f.dds_ventana + ' · ' + f.etapa) + ' · ' + (f.dds_inicio === f.dds_fin ? ddmm(ini) : ddmm(ini) + '-' + ddmm(fin)) + '</small></span>' +
+                pillPlan(x) + '</div>'; 
+        }).join('') + (marcaPuesta ? '' : marcaHoy);
+
+        // ---- Riegos: últimos 28 días (o desde la siembra si es más reciente) ----
+        var desde = sumarDias(hoy(), -27);
+        if (siembra > desde) desde = siembra;
+        var diasR = [];
+        for (var d = desde; d <= hoy(); d = sumarDias(d, 1)) diasR.push(d);
+        var letras = { S: 'Sí', J: 'J', N: 'No', X: '-' };
+        var conDato = 0, cumplidos = 0;
+        var celdas = diasR.map(function (d) {
+            var est = estadoRiegoDia(v.id, aISO(d));
+            if (est !== 'X') conDato++;
+            if (est === 'S' || est === 'J') cumplidos++;
+            return '<div class="dia"><small>' + diaCorto(d) + '</small><span class="celda ' + est + '">' + letras[est] + '</span></div>';
+        }).join('');
+        var pct = conDato ? Math.round(cumplidos / conDato * 100) : null;
+        var claseRiego = pct === null ? '' : pct >= 90 ? 'good' : pct < 75 ? 'bad' : 'warn'; // mismos umbrales que el Panel
+
+        // --- Tablas de registros (los 15 más recientes; el historial completo será B.4) ----
+        var tablaRiegos = regsRiego.length
+            ? '<div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Efectivo</th><th>Detalle</th><th>Hora</th></tr></thead><tbody>' +
+                regsRiego.slice(0, 15).map(function (r) {
+                    return '<tr><td style="white-space:nowrap">' + ddmm(deISO(r.fecha_riego)) + '</td><td>' +
+                        (r.riego_efectivo === 'SI' ? '<span class="pill ok">Sí</span>' : '<span class="pill err">No</span>') + '</td><td>' +
+                        esc(r.riego_efectivo === 'SI' ? r.tipo_riego : (r.razon_no || 'Sin motivo')) + '</td><td class="mono">' + horaDe(r.marca_temporal) + '</td></tr>';
+                }).join('') + '</tbody></table></div>'
+            : '<div class="notice muted">Sin riegos registrados.</div>';
+        
+        var porNum = {};
+        (plan ? plan.filas : []).forEach(function (f) { porNum[String(f.num)] = f; });
+        var tablaApli = regsApli.length
+                ? '<div class="table-wrap"><table><thead><tr><th>#</th><th>Producto</th><th>Realizado</th><th>Fecha</th></tr></thead><tbody>' +
+                    regsApli.slice(0, 15).map(function (r) {
+                        var f = porNum[r.num_aplicacion];
+                        var cls = { SI: 'ok', PARCIAL: 'warn', NO: 'err' }[r.realizado], txt = { SI: 'Sí', PARCIAL: 'Parcial', NO: 'No'}[r.realizado];
+                        return '<tr><td><b>' + (r.num_aplicacion === 'EXTRA' ? 'Extra' : esc(r.num_aplicacion)) + '</b></td><td>' + esc(f ? f.producto : 'Fuera de plan') + '</td>' +
+                            '<td><span class="pill ' + cls + '">' + txt + '</span></td><td style="white-space:nowrap">' + (r.fecha_real ? ddmm(deISO(r.fecha_real)):  '-') + '</td></tr>';
+                    }).join('') + '</tbody></table></div>'
+                : '<div class="notice muted">Sin aplicaciones registradas.</div>';
+
+        // ---- Última subida a BMS ---
+        var sync = D.sync.resultados.filter(function (x) { return x.vivero_id === v.id; })[0];
+        var estSync = { ok: ['ok', 'Subido'], error: ['err', 'Falló'], sin_vincular: ['warn','Sin estudio vinculado'] };
+
+        return '' +
+            '<header class="page-head">' +
+                '<div><div class="eyebrow"><a href="#/viveros">Viveros</a> · ' + esc(v.lugar + ' · ' + v.temporada) + '</div>' +
+                    '<h1 class="titulo-vivero">' + esc(v.nombre) + '</h1>' +
+                    '<p class="lead">' + esc(v.tipo) + ' · siembra ' + ddmmaaaa(v.fecha_siembra) + '  · ' + dds + ' DDS · ' +
+                        (v.study_dbid ? 'Estudio BMS ' + v.study_dbid + (e && e.nombre !== v.nombre ? ' (en BMS: ' + esc(e.nombre) + ')' : '')
+                                        : '<b style="color:var(--warn-fg)">Sin estudio en BMS</b>') +
+                        (v.activo ?  '' : ' · <b>Inactivo</b>') + '</p></div>' +
+                (v.activo
+                    ? '<div class="field-inline det-botones">' +
+                        (v.study_dbid ? '' : '<button type="button" class="btn" data-action="sync-accion" data-valor="Vincular" data-id="' + v.id + '" data-vivero="' + esc(v.nombre) + '">Vincular con BMS</button>') +
+                        '<button type="button" class="btn btn-blue" data-action="det-capturar" data-modo="riego" data-valor="' + v.id + '">Registrar riego</button>' +
+                        '<button type="button" class="btn btn-primary" data-action="det-capturar" data-modo="apli" data-valor="' + v.id + '">Registrar aplicación</button>' +
+                    '</div>'
+                :   '<div class="notice muted">Vivero inactivo: actívalo en Viveros para registrar.</div>') +
+            '</header>' +
+
+            '<section class="kpis" aria-label="Indicadores del vivero">' +
+                kpi('Días desde la siembra', dds +  ' DDS', 'Siembra ' + ddmmaaaa(v.fecha_siembra), '') +
+                kpi('Cumplimiento de aplicaciones', pctApli === null ? '-' : pctApli + ' %',
+                    plan ? cump.aTiempo + ' de ' + cump.evaluadas + ' a tiempo (±' + MARGEN_DIAS + ' días)' : 'Sin plan vigente', claseApli) +
+                kpi('Aplicaciones atrasadas', atrasadas, 'Fuera de la ventana del plan', atrasadas ? 'bad' : 'good') + 
+                kpi('Cumplimiento de riego', pct === null ? '-' : pct + ' %', 'Últimos ' + diasR.length + ' días, justificados incluidos', claseRiego) +
+            '</section>' +
+
+            '<section class="row">' + 
+                '<div class="card grow-3">' +
+                    '<div class="card-head"><h2>Avance contra el plan</h2>' +
+                        (plan ? '<span class="kpi-sub">Plan ' + esc(v.lugar + ' ' + v.temporada) + ' · versión ' + plan.version + '</span>' : '') + '</div>' +
+                    (plan ? '<div class="plan-linea">' + lineas + '</div>' 
+                        : '<div class="notice warn">No hay plan vigente para ' + esc(v.lugar + ' ' + v.temporada) + '.</div>') +
+                    '</div>' +
+                    '<div class="stack grow-2">' +
+                        '<div class="card"><div class="card-head"><h2>Riegos</h2><span class="kpi-sub">Últimos ' + diasR.length + ' días</span></div>' +
+                            '<div class="riegos-vivero">' + celdas + '</div></div>' +
+                    '<div class="card"><h2>Última subida a BMS</h2>' +
+                        (sync
+                            ?   '<div><span class="pill ' + estSync[sync.estado][0] + '">' + estSync[sync.estado][1] + '</span></div>' +
+                                '<div class="lista-simple">' +
+                                    '<div><span>Corrida</span><b>Hoy ' + D.sync.corrida.hora + '</b></div>' +
+                                    '<div><span>Aplicaciones</span><b>' + (sync.ap_filas || 0) + ' filas</b></div>' +
+                                    '<div><span>Riegos</span><b>' + (sync.r_filas || 0) + ' filas</b></div>' +
+                                '</div>' +
+                                (sync.error ? '<div class="notice err">' + esc(sync.error) + '</div>' : '')
+                            :   '<div class="kpi-sub">Todavía no ha entrado en una corrida.</div>') +
+                    '</div>' +
+                '</div>' +
+            '</section>' +
+
+            '<section class="row">' +
+                '<div class="card grow-1"><div class="card-head"><h2>Riegos registrados</h2><a href="#/registros" data-action="reg-ver-vivero" data-valor="' + v.id + '" data-tipo="riego">Ver todos</a></div>' + tablaRiegos + '</div>' +
+                '<div class="card grow-1"><div class="card-head"><h2>Aplicaciones registradas</h2><a href="#/registros" data-action="reg-ver-vivero" data-valor="' + v.id + '" data-tipo="apli">Ver todos</a></div>' + tablaApli + '</div>' +
+            '</section>';                        
+    }
+    
+    // --------------------------------------------------
+    // PANTALLA 7 · HISTORIAL DE REGISTROS (#/registros)
+    // Buscar, filtrar, corregir y anular. Nada se borra: lo anulado queda con su motivo
+    // --------------------------------------------------
+    function nuevoFiltroRegistros() {
+        return { tipo: 'ambos', viveroId: '', lugar: 'Todos', desde: aISO(sumarDias(hoy(), -13)), hasta: aISO(hoy()),
+                 ver: 'todos', problemas: false, texto: '', editando: null, anulando: null, form: null, motivo: '', motivoDetalle: '' };
+    }
+    function cerrarFormsRegistro() {
+        var f = estado.registros;
+        f.editando = null; f.anulando = null; f.form = null; f.motivo = ''; f.motivoDetalle = '';
+    }
+    // Busca un registro (riego o aplicación) por su submission_id
+    function buscarRegistro(id) {
+        var r = D.registro_riegos.filter(function (x) { return x.submission_id === id; })[0];
+        if (r) return { t: 'riego', r: r };
+        r = D.registro_aplicaciones.filter(function (x) { return x.submission_id === id; })[0];
+        return r ? { t: 'apli', r: r } : null;
+    }
+    function resumenRegistro(x) {
+        var r = x.r;
+        if (x.t === 'riego') return r.riego_efectivo === 'SI' ? 'Sí · ' + (r.tipo_riego || '') : 'No · ' + (r.razon_no || 'sin motivo');
+        var txt = { SI: 'Sí', PARCIAL: 'Parcial', NO: 'No' }[r.realizado];
+        if (r.realizado === 'NO') return txt + ' · ' + (r.razon_no || 'sin motivo');
+        if (r.realizado === 'PARCIAL') return txt + ' · ' + (r.cambio || 'sin cambio anotado');
+        return txt; 
+    }
+    function queAplicacion(r, v) {
+        if (r.num_aplicacion === 'EXTRA') return 'EXTRA · ' + (r.extra_producto || 'fuera de plan');
+        var plan = planVigente('aplicaciones', v.lugar, v.temporada);
+        var f = plan ? plan.filas.filter(function (f) { return String(f.num) === r.num_aplicacion; })[0] : null;
+        return '#' + r.num_aplicacion + (f ? ' · ' + f.producto : '');
+    }
+    // Problemas que vale la pena revisar (solo en registros no anulados)
+    function problemaDe(x) {
+        var r = x.r;
+        if (r.anulado) return '';
+        if (x.t === 'riego') {
+            if (r.riego_efectivo === 'NO' && !r.razon_no) return 'NO sin motivo';
+            if (riegosDe(r.vivero_id, r.fecha_riego).length > 1) return 'Posible duplicado';
+        } else {
+            if (r.realizado === 'PARCIAL' && r.num_aplicacion !== 'EXTRA' && !r.cambio) return 'Parcial sin cambio anotado';
+            if (r.num_aplicacion !== 'EXTRA' && r.realizado !== 'NO' && aplicacionesValidas().filter(function (o) {
+                return o.vivero_id === r.vivero_id && o.num_aplicacion === r.num_aplicacion && o.realizado !== 'NO';
+            }). length > 1) return 'Posible duplicado';
+        }
+        return '';
+    }
+
+    function renderRegistros() {
+        var f = estado.registros;
+        var lugares = ['Todos'].concat(unicos(D.viveros.map(function (v) { return v.lugar; })));
+        var texto = f.texto.trim().toLowerCase();
+
+        // SUPABASE: dos consultas (registros_riegos y registros_aplicaciones) con los mismos filtros, unidas aquí
+        var lista = [];
+        D.registro_riegos.forEach(function (r) { lista.push({ t: 'riego', r: r, fecha: r.fecha_riego }); });
+        D.registro_aplicaciones.forEach(function (r) { lista.push({ t: 'apli', r: r, fecha: r.fecha_real || String(r.marca_temporal).slice(0, 10) }); });
+
+        var todas = lista.filter(function (x) {
+            var v = viveroPorId(x.r.vivero_id);
+            if (!v) return false;
+            x.v = v;
+            x.problema = problemaDe(x);
+            x.que = x.t === 'riego' ? 'Riego' : queAplicacion(x.r, v);
+            x.resumen = resumenRegistro(x);
+            if (f.tipo !== 'ambos' && x.t !== f.tipo) return false;
+            if (f.viveroId && String(v.id) !== f.viveroId) return false;
+            if (f.lugar !== 'Todos' && v.lugar !== f.lugar) return false;
+            if (f.desde && x.fecha < f.desde) return false;
+            if (f.hasta && x.fecha > f.hasta) return false;
+            if (f.ver === 'vigentes' && x.r.anulado) return false;
+            if (f.ver === 'anulados' && !x.r.anulado) return false;
+            if (f.problemas && !x.problema) return false;
+            if (texto && (v.nombre + ' ' + x.que + ' ' + x.resumen + ' ' + (x.r.observaciones || '') + ' ' + (x.r.motivo_anulacion || '')).toLowerCase().indexOf(texto) < 0) return false;
+            return true;
+        }).sort(function (a, b) {
+            if (a.fecha !== b.fecha) return a.fecha < b.fecha ? 1 : -1;
+            return a.r.marca_temporal < b.r.marca_temporal ? 1 : -1;
+        });
+        var conProblema = todas.filter(function (x) { return x.problema; }).length;
+
+        var filas = todas.slice(0, 100).map(function (x) {
+            var r = x.r, id = r.submission_id;
+            var detalle = (x.t === 'apli' ? '<b>' + esc(x.que) + '</b><br>' : '') +
+                '<span' + (r.anulado ? ' class="tachado"' : '') + '>' + esc(x.resumen) + '</span>' +
+                (x.problema ? ' <span class="pill err">' + esc(x.problema) + '</span>' : '') +
+                (r.observaciones ? '<div class="kpi-sub">' + esc(r.observaciones) + '</div>' : '') +
+                (r.correcciones || []).map(function (c) {
+                    return '<div class="kpi-sub">Corregido ' + ddmm(deISO(c.en.slice(0, 10))) + ' ' + horaDe(c.en) + ' por ' + esc(c.por) + ' · antes: ' + esc(c.antes) + '</div>';
+                }).join('') +
+                (r.anulado ? '<div style="margin-top:4px"><span class="pill err">Anulado</span> <span class="kpi-sub">' + esc(r.motivo_anulacion) +
+                    ' · ' + esc(r.anulado_por) + ', ' + ddmm(deISO(r.anulado_en.slice(0, 10))) + ' ' + horaDe(r.anulado_en) + '</span></div>' : '');
+            var acciones = r.anulado ? '' :
+                '<button type="button" class="btn btn-sm" data-action="reg-corregir" data-valor="' + id + '">Corregir</button> ' +
+                '<button type="button" class="btn btn-sm" data-action="reg-anular" data-valor="' + id + '">Anular</button>';
+            return '<tr class="' + (r.anulado ? 'fila-anulada' : x.problema ? 'fila-err' : '') + '">' +
+                '<td style="white-space:nowrap">' + ddmmaaaa(x.fecha) + '</td>' +
+                '<td><a class="mono" href="#/vivero/' + x.v.id + '">' + esc(x.v.nombre) + '</a></td>' +
+                '<td>' + (x.t == 'riego' ? '<span class="pill info">Riego</span>' : '<span class="pill ok">Aplicación</span>') + '</td>' +
+                '<td>' + detalle + '</td>' +
+                '<td class="mono" style="white-space:nowrap">' + ddmm(deISO(String(r.marca_temporal).slice(0, 10))) + ' ' + horaDe(r.marca_temporal) + '</td>' +
+                '<td style="text-align:right;white-space:nowrap">' + acciones + '</td></tr>' +
+                (f.editando === id ? formCorreccion(x) : '') +
+                (f.anulando === id ? formAnulacion(): '');
+        }).join('');
+
+        return '' +
+            '<header class="page-head"><div><div class="eyebrow">Registros · datos de ejemplo</div><h1>Historial de registros</h1>' +
+                '<p class="lead">Busca, corrige o anula riegos y aplicaciones. Nada se borra: lo anulado queda tachado con su motivo, deja de contar y no se sube a BMS.</p></div></header>' +
+            
+                '<section class="card">' +
+                    '<div class="filtros-registros">' +
+                        '<label class="field">Vivero<select data-bind="registros.viveroId"><option value="">Todos</option>' +
+                            D.viveros.slice().sort(porNombre).map(function (v) {
+                                return '<option value="' + v.id + '"' + (String(v.id) === f.viveroId ? ' selected' : '') + '>' + esc(v.nombre) + '</option>';
+                            }).join('') + '</select></label>' +
+                        '<label class="field">Lugar<select data-bind="registros.lugar">' + opciones(lugares, f.lugar) + '</select></label>' +
+                        '<label class="field">Desde<input type="date" data-bind="registros.desde" value="' + f.desde + '" max="' + aISO(hoy()) + '"></label>' +
+                        '<label class="field">Hasta<input type="date" data-bind="registros.hasta" value="' + f.hasta + '" max="' + aISO(hoy()) + '"></label>' +
+                        '<label class="field">Buscar<input type="text" data-bind="registros.texto" value="' + esc(f.texto) + '" placeholder="Producto, motivo... y Enter"></label>' +
+                    '</div>' +
+                    '<div class="card-head">' +
+                        '<div class="field-inline">' +
+                            '<div class="seg">' + [['ambos', 'Ambos'], ['riego', 'Riegos'], ['apli', 'Aplicaciones']].map(function (o){
+                                return '<button type="button" class="verde" data-action="reg-tipo" data-valor="' + o[0] + '" aria-pressed="' + (f.tipo === o[0]) + '">' + o[1] + '</button>';
+                            }).join('') + '</div>' +
+                            '<div class="seg">' + [['todos', 'Todos'], ['vigentes', 'Vigentes'], ['anulados', 'Anulados']].map(function (o) {
+                                return '<button type="button" class="verde" data-action="reg-ver" data-valor="' + o[0] + '" aria-pressed="' + (f.ver === o[0]) + '">' + o[1] + '</button>';
+                            }).join('') + '</div>' +
+                            '<button type="button" class="btn btn-filtro" data-action="reg-problemas" aria-pressed="' + f.problemas + '">Solo con problemas' + (conProblema ? ' (' + conProblema + ')' : '') + '</button>' +
+                            '<button type="button" class="btn" data-action="reg-limpiar">Limpiar filtros</button>' +
+                        '</div>' +
+                        '<span class="kpi-sub">' + todas.length  + ' registro(s)' + (todas.length > 100 ? ' · se muestran los 100 más recientes' : '') + '</span>' +
+                    '</div>' +
+                    (todas.length
+                        ? '<div class="table-wrap"><table style="min-width:860px"><thead><tr><th>Fecha</th><th>Vivero</th><th>Tipo</th><th>Detalle</th><th>Registrado</th><th><span class="oculto">Acciones</span></th></tr></thead><tbody>' +
+                           filas + '</tbody></table></div>'
+                        : '<div class="notice muted">No hay registros con estos filtros.</div>') +
+                '</section>';
+    }
+
+    // Fila con el formulario de corrección, debjajo del registro
+    function formCorreccion(x) {
+        var fc = estado.registros.form, cat = D.catalogos, hoyISO = aISO(hoy());
+        function boton(campo, valor, txt, cls) {
+            return '<button type="button" class="' + cls + '" data-action="reg-set" data-campo="' + campo + '" data-valor="' + valor + '" aria-pressed="' + (fc[campo] === valor) + '">' + txt + '</button>';
+        }
+        var campos = x.t === 'riego'
+            ? '<label class="field">Fecha del riego<input type="date" data-bind="registros.form.fecha" value="' + fc.fecha + '" max="' + hoyISO + '"></label>' +
+              '<div class="field">¿Riego efectivo?<div class="seg">' + boton('efectivo', 'SI', 'Sí', 'si') + boton('efectivo', 'NO', 'No', 'no') + '</div></div>' +
+              (fc.efectivo === 'SI' ? '<label class="field">Tipo de riego<select data-bind="registros.form.tipoRiego"><option value="">- Selecciona -</option>' + opciones(cat.tiposRiego, fc.tipoRiego) + '</select></label>' : '') +
+              (fc.efectivo === 'NO' ? '<label class="field">Razón (obligatoria)<select data-bind="registros.form.razon"><option value="">- Selecciona -</option>' + opciones(cat.razonesRiegoNo, fc.razon) + '</select></label>' : '') 
+            : '<div class="field">¿Se realizó?<div class="seg">' + boton('realizado', 'SI', 'Sí', 'si') + boton('realizado', 'PARCIAL', 'Parcial', 'parcial') + boton('realizado', 'NO', 'No', 'no') + '</div></div>' +
+              (fc.realizado !== 'NO' ? '<label class="field">Fecha real<input type="date" data-bind="registros.form.fechaReal" value="' + fc.fechaReal + '" max="' + hoyISO + '"></label>' : '') +
+              (fc.realizado === 'PARCIAL' && x.r.num_aplicacion !== 'EXTRA' ?
+                '<div class="field">¿Qué cambió vs el plan? (obligatorio, puedes elegir los dos)<div class="chips">' +
+                    '<button type="button" data-action="reg-cambio" data-valor="cambioDosis" aria-pressed="' + fc.cambioDosis + '">Dosis</button>' +
+                    '<button type="button" data-action="reg-cambio" data-valor="cambioProducto" aria-pressed="' + fc.cambioProducto + '">Producto</button>' +
+                '</div></div>' +
+                '<label class="field">Detalle del cambio (opcional)<input type="text" data-bind="registros.form.cambio" value="' + esc(fc.cambio) + '" placeholder="Ej: no se aplicó Vayego"></label>' : '') +
+              (fc.realizado === 'NO' ? '<label class="field">Razón (obligatoria)<select data-bind="registros.form.razon"><option value="">- Selecciona -</option>' + opciones(cat.razonesAplicacionNo, fc.razon) + '</select></label>' : '');
+        return '<tr class="fila-form"><td colspan="6"><div class="form-registro">' +
+            '<div><b>Corregir registro</b><div class="kpi-sub">El vivero y la aplicación no se cambian. Si están equivocados, anula este registro y capturalo de nuevo.</div></div>' +
+            '<div class="grid-form">' + campos +
+                '<label class="field ancho">Observaciones<input type="text" data-bind="registros.form.obs" value="' + esc(fc.obs) + '"></label></div>' +
+            '<div class="field-inline"><button type="button" class="btn btn-primary" data-action="reg-guardar">Guardar corrección</button>' +
+                '<button type="button" class="btn" data-action="reg-cancelar">Cancelar</button></div>' +
+        '</div></td></tr>';
+    }
+
+    // fila con el formulario de anulación: el motivo es obligatorio
+    function formAnulacion() {
+        var f = estado.registros;
+        return '<tr class="fila-form"><td colspan="6"><div class="form-registro anular">' +
+            '<div><b>Anular registro</b><div class="kpi-sub">No se borra: queda tachado con su motivo, deja de contar en Panel y Detalle y no se sube a BMS.</div></div>' +
+            '<div class="grid-form">' +
+                '<label class="field">Motivo (obligatorio)<select data-bind="registros.motivo"><option value="">- Selecciona -</option>' + opciones(D.catalogos.motivosAnulacion, f.motivo) + '</select></label>' +
+                '<label class="field ancho">Detalle' + (f.motivo === 'Otro' ? ' (obligatorio)' : ' (opcional)') +
+                    '<input type="text" data-bind="registros.motivoDetalle" value="' + esc(f.motivoDetalle) + '" placeholder="Ej: se registró dos veces desde dos tablets"></label>' +
+                '</div>' +
+                '<div class="field-inline"><button type="button" class="btn btn-rojo" data-action="reg-confirmar-anular">Confirmar anulación</button>' +
+                    '<button type="button" class="btn" data-action="reg-cancelar">Cancelar</button></div>' +
+        '</div></td></tr>';
+    }
+
+    function abrirCorreccion(id) {
+        var x = buscarRegistro(id), r = x.r;
+        cerrarFormsRegistro();
+        estado.registros.editando = id;
+        estado.registros.form = x.t === 'riego'
+            ? { fecha: r.fecha_riego, efectivo: r.riego_efectivo, tipoRiego: r.tipo_riego || '', razon: r.razon_no || '', obs: r.observaciones || '' }
+            : { realizado: r.realizado, fechaReal: r.fecha_real || aISO(hoy()), cambio: '', cambioDosis: false, cambioProducto: false, razon: r.razon_no || '', obs: r.observaciones || ''};
+        if (x.t === 'apli') Object.assign(estado.registros.form, leerCambio(r.cambio));
+        render();
+    }
+
+    // Separa el texto guardado en "cambio" (ej. "Cambió dosis y producto · no se aplicó Vayego")
+    // en los botones Dosis/Producto y el detalle. Los registros viejos con texto libre quedan como detalle.
+    function leerCambio(texto) {
+        var m = String(texto || '').match(/^Cambió (dosis y producto|dosis|producto)(?: · (.*))?$/);
+        if (!m) return { cambioDosis: false, cambioProducto: false, cambio: texto || '' };
+        return { cambioDosis: m[1].indexOf('dosis') >= 0, cambioProducto: m[1].indexOf('producto') >= 0, cambio: m[2] || '' };
+    }
+
+    function guardarCorreccion() {
+        var x = buscarRegistro(estado.registros.editando), r = x.r, fc= estado.registros.form, hoyISO = aISO(hoy());
+        var cambios;
+        if (x.t === 'riego') {
+            if (!fc.fecha) return toast('Indica la fecha del riego', true);
+            if (fc.fecha > hoyISO) return toast('La fecha no puede ser futura', true);
+            if (fc.efectivo === 'SI' && !fc.tipoRiego) return toast('Elige el tipo de riego', true);
+            if (fc.efectivo === 'NO' && !fc.razon) return toast('La razón es obligatoria cuando no se regó', true);
+            cambios = { fecha_riego: fc.fecha, riego_efectivo: fc.efectivo, tipo_riego: fc.efectivo === 'SI' ? fc.tipoRiego : '', 
+                        razon_no: fc.efectivo === 'NO' ? fc.razon : '', observaciones: fc.obs.trim() };
+        } else {
+            if (fc.realizado !== 'NO' && !fc.fechaReal) return toast('Indica la fecha real', true);
+            if (fc.realizado !== 'NO' && fc.fechaReal > hoyISO) return toast('La fecha no puede ser futura', true);
+            if (fc.realizado === 'PARCIAL' && r.num_aplicacion !== 'EXTRA' && !fc.cambioDosis && !fc.cambioProducto) return toast('Indica si cambió la dosis, el producto o los dos', true);
+            if (fc.realizado === 'NO' && !fc.razon) return toast('La razón es obligatoria cuando no se realizó', true);
+            cambios = { realizado: fc.realizado, fecha_real: fc.realizado === 'NO' ? null : fc.fechaReal,
+                        cambio: fc.realizado === 'PARCIAL' && r.num_aplicacion !== 'EXTRA' ? textoCambio(fc) : '', razon_no: fc.realizado === 'NO' ? fc.razon : '', observaciones: fc.obs.trim() };
+        }
+        var hubo = Object.keys(cambios).some(function (k) { return (r[k] || '') !== (cambios[k] || ''); });
+        if (!hubo) return toast ('No hay cambios para guardar', true);
+        // SUPABASE: update registro_riegos / registro_aplicaciones set ..., corregido_por, corregido_en; valor_anterior where submission_id = ...
+        r.correcciones = (r.correcciones || []).concat([{ en: marcaAhora(), por: D.usuario.nombre, antes: resumenRegistro(x) }]);
+        Object.assign(r, cambios);
+        cerrarFormsRegistro();
+        toast('Corrección guardada');
+        render();
+    }
+
+    function confirmarAnulacion() {
+        var f = estado.registros;
+        if (!f.motivo) return toast('Elige el motivo de la anulación', true);
+        if (f.motivo === 'Otro' && !f.motivoDetalle.trim()) return toast('Describe el motivo del detalle', true);
+        var x = buscarRegistro(f.anulando);
+        // SUPABASE: update ... set anulado = true, motivo_anulacion, anulado_en where submission_id = ...
+        Object.assign(x.r, { anulado: true, motivo_anulacion: f.motivo + (f.motivoDetalle.trim() ? ' ·' + f.motivoDetalle.trim() : ''),
+                             anulado_por: D.usuario.nombre, anulado_en: marcaAhora() });
+        cerrarFormsRegistro();
+        toast('Registro anulado: ya no cuenta en el Panel ni se sube a BMS');
+        render();
+    }
+            
     // --------------------------------------------------
     // PANTALLA 4 · CAPTURA EN CAMPO
     // --------------------------------------------------
@@ -614,7 +1074,7 @@
                 '<span class="mono">' + esc(x.nombre) + '</span><small>' + esc(sub) + '</small></button>';
         }).join('');
 
-        var cuerpo = !v ? '' : (esRiego ? camposRiego(c, previos, cat) : camposAplicacion(c, v, cat));
+        var cuerpo = !v ? '' : ultimoRegistro(v, esRiego) + (esRiego ? camposRiego(c, previos, cat) : camposAplicacion(c, v, cat));
         var etiquetaGuardar = esRiego ? (previos.length ? 'Guardar segundo riego ' : 'Guardar riego') : 'Guardar aplicación';
         
         return '' +
@@ -644,6 +1104,19 @@
             '</div>' ;
     }
 
+    // Último registro (no anulado) del vivero en el mdo elegido, para que en campo se vea que se hizo antes
+    function ultimoRegistro(v, esRiego) {
+        // SUPABASE: select ... where vivero_id = v.id not anulado order by marca_temporal desc limit 1
+        var lista = (esRiego ? riegosValidos(): aplicacionesValidas()).filter(function (r) { return r.vivero_id === v.id; })
+            .sort(function (a, b) { return a.marca_temporal < b.marca_temporal ? 1 : -1; });
+        var r = lista[0];
+        if (!r) return '<div class="notice muted">' + (esRiego ? 'Todavía no hay riegos' : 'Todavía no hay aplicaciones') + ' registrados en este vivero.</div>';
+        var x = { t: esRiego ? 'riego' : 'apli', r: r };
+        var fecha = esRiego ? r.fecha_riego : (r.fecha_real || String(r.marca_temporal).slice(0, 10));
+        return '<div class="notice muted"><b style="color:var(--ink)">' + (esRiego ? 'Último riego: ' : 'Última aplicación: ') + '</b>' +
+            ddmm(deISO(fecha)) + ' · ' + (esRiego ? '' : esc(queAplicacion(r, v)) + ' · ') + esc(resumenRegistro(x)) +
+            '<span class="kpi-sub"> · registrado ' + ddmm(deISO(String(r.marca_temporal).slice(0, 10))) + ' · ' + horaDe(r.marca_temporal) + '</span></div>'; 
+    }
     function camposRiego(c, previos, cat) {
         return '' + 
             (previos.length ? '<div class="notice err"><b>Ya guardaste un riego en este vivero para esta fecha (' + horaDe(previos[0].marca_temporal) + ').</b><br>¿Es un segundo riego? Si no, cambia de vivero o de fecha.</div>' : '') +
@@ -657,6 +1130,7 @@
             }).join('') + '</div></div>' : '') +
             (c.efectivo === 'NO' ? '<label class="field">Razón por la que no se regó (obligatoria)<select data-bind="captura.razon"><option value="">- Selecciona -</option>' + opciones(cat.razonesRiegoNo, c.razon) + '</select></label>' : '');
     }
+
 
     function camposAplicacion(c, v, cat) {
         var plan = planVigente('aplicaciones', v.lugar, v.temporada);
@@ -681,7 +1155,7 @@
                 }).join('') +
                 '<option value="EXTRA"' + (esExtra ? ' selected' : '') + '>Aplicación extra (fuera de plan)</option></select></label>' +
             info +
-            (sel && hechas.indexOf(String(sel.num)) >= 0 ? '<div class="notice err"><b>Esta aplicación ya está registrada en este vivero.</b> Guardála solo si es una repetición.</div>' : '') +
+            (sel && hechas.indexOf(String(sel.num)) >= 0 ? '<div class="notice err"><b>Esta aplicación ya está registrada en este vivero.</b> Guárdala solo si es una repetición.</div>' : '') +
             (esExtra ?
                 '<label class="field">Etapa del cultivo<select data-bind="captura.extraEtapa"><option value="">- Selecciona -</option>' + opciones(cat.etapas, c.extraEtapa) + '</select></label>' +
                 '<label class="field">Producto(s)<input type="text" data-bind="captura.extraProducto" value="' + esc(c.extraProducto) + '" placeholder="Ej: Amistar + Nativo"></label>' +
@@ -692,7 +1166,12 @@
                 }).join('') +
             '</div></div>' +
             (c.realizado && c.realizado !== 'NO' ? '<label class="field">Fecha real de aplicación<input type="date" data-bind="captura.fechaReal" value="' + c.fechaReal + '" max="' + aISO(hoy()) + '"></label>' : '') +
-            (c.realizado === 'PARCIAL' && !esExtra ? '<label class="field">¿Qué cambió vs el plan? (dosis o producto)<input type="text" data-bind="captura.cambio" value="' + esc(c.cambio) + '" placeholder="Ej: no se aplicó Vayego"></label>' : '') +
+            (c.realizado === 'PARCIAL' && !esExtra ?
+                '<div class="field">¿Qué cambió vs el plan? (obligatorio, puedes elegir los dos)<div class="chips">' +
+                    '<button type="button" data-action="cap-cambio" data-valor="cambioDosis" aria-pressed="' + c.cambioDosis + '">Dosis</button>' +
+                    '<button type="button" data-action="cap-cambio" data-valor="cambioProducto" aria-pressed="' + c.cambioProducto + '">Producto</button>' +
+                '</div></div>' +
+                '<label class="field">Detalle del cambio (opcional)<input type="text" data-bind="captura.cambio" value="' + esc(c.cambio) + '" placeholder="Ej: no se aplicó Vayego"></label>' : '') +
             (c.realizado === 'NO' ? '<label class="field">Razón por la cual no se realizó (obligatoria)<select data-bind="captura.razon"><option value="">- Selecciona -</option>' + opciones(cat.razonesAplicacionNo, c.razon) + '</select></label>' : ''); 
     }
 
@@ -707,18 +1186,21 @@
             if (c.efectivo === 'NO' && !c.razon) return toast('La razón es obligatoria cuando no se regó', true);
             // SUPABASE: insert en registro_riegos con submission_id (UUID) único.
             D.registro_riegos.push({ vivero_id: v.id, fecha_riego: c.fecha, riego_efectivo: c.efectivo, tipo_riego: c.tipoRiego,
-                razon_no: c.razon, marca_temporal: marcaAhora(), submission_id: nuevoId() });
+                razon_no: c.razon, observaciones: c.obs.trim(), marca_temporal: marcaAhora(), submission_id: nuevoId() });
         } else {
             if (!c.planNum) return toast('Elige la aplicación', true);
             if (c.planNum === 'EXTRA' && (!c.extraEtapa || !c.extraProducto.trim())) return toast('Indica etapa y producto de la aplicación extra', true);
             if (!c.realizado) return toast('Indica si se realizó',true);
             if (c.realizado !== 'NO' && !c.fechaReal) return toast('Indica la fecha real', true);
             if (c.realizado !== 'NO' && c.fechaReal > hoyISO) return toast('La fecha no puede ser futura', true);
-            if (c.realizado === 'PARCIAL' && c.planNum !== 'EXTRA' && !c.cambio.trim()) return toast('Indica qué cambió vs el plan', true);
+            if (c.realizado === 'PARCIAL' && c.planNum !== 'EXTRA' && !c.cambioDosis && !c.cambioProducto) return toast('Indica si  cambió la dosis, el producto o los dos', true);
             if (c.realizado === 'NO' && !c.razon) return toast('La razón es obligatoria cuando no se realizó', true);
             //SUPABASE: insert en registro_aplicaciones con submission_id (UUID) único
             D.registro_aplicaciones.push({ vivero_id: v.id, num_aplicacion: String(c.planNum), realizado: c.realizado,
-                fecha_real: c.realizado === 'NO' ? null : c.fechaReal, marca_temporal: marcaAhora(), submission_id: nuevoId() });
+                fecha_real: c.realizado === 'NO' ? null : c.fechaReal, razon_no: c.realizado === 'NO' ? c.razon : '',
+                cambio: c.realizado === 'PARCIAL' && c.planNum !== 'EXTRA' ? textoCambio(c) : '', observaciones: c.obs.trim(),
+                extra_etapa: c.planNum === 'EXTRA' ? c.extraEtapa : '', extra_producto: c.planNum === 'EXTRA' ? c.extraProducto.trim() : '',
+                extra_dosis: c.planNum === 'EXTRA' ? c.extraDosis.trim() : '', marca_temporal: marcaAhora(), submission_id: nuevoId() });
         }
         if (!estado.enLinea) D.pendientesEnvio++;
         toast(estado.enLinea ? 'Registro guardado' : 'Guardado en el dispositivo; se enviará al volver la señal');
@@ -727,6 +1209,13 @@
         render();
         window.scrollTo(0, 0);
     }
+    function textoCambio(c) {
+        var que = [];
+        if (c.cambioDosis) que.push('dosis');
+        if (c.cambioProducto) que.push('producto');
+        return 'Cambió ' + que.join(' y ') + (c.cambio.trim() ? ' · ' + c.cambio.trim() : '');
+    }
+
     function nuevoId() {
         return (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : 'id-' + Date.now() + '-' + Math.random().toString(16).slice(2);
     }
@@ -734,16 +1223,20 @@
     //-------------------------------------------------------------
     // NAVEGACIÓN Y EVENTOS
     //-------------------------------------------------------------
-    var rutas = { panel: renderPanel, planes: renderPlanes, sync: renderSync, captura: renderCaptura, viveros: renderViveros };
+    var rutas  = { panel: renderPanel, planes: renderPlanes, sync: renderSync, captura: renderCaptura, viveros: renderViveros, vivero: renderDetalleVivero, registros: renderRegistros };
+    // El hash puede traer un id: #/vivero/21 -> ruta "vivero", id 21
+    function partesRuta() { return (location.hash || '').replace(/^#\/?/, '').split('/'); }
     function rutaActual() {
-        var r = (location.hash || '').replace(/^#\/?/, '');
+        var r = partesRuta()[0];
         return rutas[r] ? r : 'panel';
     }
+    function idDeRuta() { var id = partesRuta()[1]; return id ? Number(id) : null; }
+
     function render() {
         var r = rutaActual();
         vista.innerHTML = rutas[r]();
         document.querySelectorAll('.nav-links a').forEach(function (a) {
-            var activo = a.getAttribute('data-route') === r;
+            var activo = a.getAttribute('data-route') === (r === 'vivero' ? 'viveros' : r);
             a.classList.toggle('activo', activo);
             if (activo) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
         });
@@ -783,6 +1276,10 @@
             case 'viv-editar': estado.viveros.form = formVivero(viveroPorId(Number(val))); render(); window.scrollTo(0, 0); break;
             case 'viv-cancelar': estado.viveros.form = null; render(); break;
             case 'viv-guardar': guardarVivero(); break;
+            case 'viv-usar-nombre-bms':
+                var eb = estudioPorId(Number(estado.viveros.form.study_dbid));
+                if (eb) { estado.viveros.form.nombre = eb.nombre; render(); }
+                break;
             case 'viv-tipo': estado.viveros.form.tipo = val; render(); break;
             case 'viv-form-activo': estado.viveros.form.activo = val === '1'; render(); break;
             case 'viv-ver': estado.viveros.ver = val; render(); break;
@@ -798,9 +1295,51 @@
                 var campo = el.getAttribute('data-campo');
                 c[campo] = val;
                 if (campo === 'efectivo') { c.tipoRiego = ''; c.razon = ''; }
-                if (campo === 'realizado') { c.razon = ''; c.cambio = ''; }
+                if (campo === 'realizado') { c.razon = ''; c.cambio = ''; c.cambioDosis = false; c.cambioProducto = false; }
                 render(); break;
+            case 'cap-cambio': c[val] = !c[val]; render(); break;
             case 'cap-guardar': guardarCaptura(); break;
+            case 'reg-tipo': estado.registros.tipo = val; render(); break;
+            case 'reg-ver': estado.registros.ver = val; render(); break;
+            case 'reg-problemas': estado.registros.problemas = !estado.registros.problemas; render(); break;
+            case 'reg-limpiar': estado.registros = nuevoFiltroRegistros(); render(); break;
+            case 'reg-corregir': abrirCorreccion(val); break;
+            case 'reg-anular': cerrarFormsRegistro(); estado.registros.anulando = val; render(); break;
+            case 'reg-cancelar': cerrarFormsRegistro(); render(); break;
+            case 'reg-set':
+                var campoR = el.getAttribute('data-campo'), fr = estado.registros.form;
+                fr[campoR] = val;
+                if (campoR === 'efectivo') { fr.tipoRiego = ''; fr.razon = ''; }
+                if (campoR === 'realizado') { fr.razon = ''; fr.cambio = ''; fr.cambioDosis = false; fr.cambioProducto = false; }
+                render(); break;
+            case 'reg-cambio': estado.registros.form[val] = !estado.registros.form[val]; render(); break;
+            case 'reg-guardar': guardarCorreccion(); break;
+            case 'reg-confirmar-anular': confirmarAnulacion(); break;
+            case 'reg-ver-vivero':
+                // Desde el detalle de un vivero: abre Registros filtrado por ese vivero desde su siembra
+                var vr = viveroPorId(Number(val));
+                estado.registros = nuevoFiltroRegistros();
+                estado.registros.viveroId = String(vr.id);
+                estado.registros.tipo = el.getAttribute('data-tipo');
+                estado.registros.desde = vr.fecha_siembra;
+                break; // el enlace mismo lleva a #/registros
+            case 'panel-problemas':
+                // Desde Pendientes de revisión: abre Registros con "Solo con problemas" y el mismo lugar del Panel
+                estado.registros = nuevoFiltroRegistros();
+                estado.registros.problemas = true;
+                estado.registros.tipo = el.getAttribute('data-tipo');
+                estado.registros.lugar = estado.filtro.lugar;
+                if (estado.registros.tipo === 'riego') estado.registros.desde = aISO(sumarDias(hoy(), -6));
+                break; // el enlace mismo lleva a #/registros
+            case 'panel-cercanas': estado.filtro.verCercanas = val; render(); break;
+            case 'det-capturar':
+                //Abre Captura con el vivero ya elegido y el modo del botón (riego o apli)
+                var vd = viveroPorId(Number(val));
+                estado.captura = nuevaCaptura(el.getAttribute('data-modo'));
+                estado.captura.viveroId = vd.id;
+                estado.capturaLugar = vd.lugar;
+                location.hash = '#/captura';
+                break;
         }
     });
 
@@ -812,7 +1351,7 @@
         if (!b) return;
         asignar(b, el.value);
         if (b === 'planes.lugar' || b === 'planes.temporada') { estado.planes.archivo = null; estado.planes.filas = null; }
-        if (el.tagName === 'SELECT' || el.type === 'date' || b.indexOf('viveros.form.') === 0) render();
+        if (el.tagName === 'SELECT' || el.type === 'date' || b.indexOf('viveros.form.') === 0 || b === 'registros.texto') render();
     });
 
     //texto libre: se guarda sin volver a dibujar (para no perder el foco)

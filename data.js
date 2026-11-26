@@ -122,6 +122,7 @@
       { vivero_id: 21, fecha_riego: haceDias(2), riego_efectivo: 'SI', tipo_riego: 'Goteo', razon_no: '', marca_temporal: marca(2, '06:45') },
       { vivero_id: 21, fecha_riego: haceDias(1), riego_efectivo: 'SI', tipo_riego: 'Goteo', razon_no: '', marca_temporal: marca(1, '06:38') },
       { vivero_id: 21, fecha_riego: haceDias(0), riego_efectivo: 'SI', tipo_riego: 'Goteo', razon_no: '', marca_temporal: marca(0, '06:40') },
+      { vivero_id: 21, fecha_riego: haceDias(0), riego_efectivo: 'SI', tipo_riego: 'Goteo', razon_no: '', marca_temporal: marca(0, '06:52') }, // duplicado de ejemplo para B.4
       { vivero_id: 22, fecha_riego: haceDias(6), riego_efectivo: 'SI', tipo_riego: 'Goteo', razon_no: '', marca_temporal: marca(6, '06:55') },
       { vivero_id: 22, fecha_riego: haceDias(5), riego_efectivo: 'SI', tipo_riego: 'Goteo', razon_no: '', marca_temporal: marca(5, '07:00') },
       { vivero_id: 22, fecha_riego: haceDias(4), riego_efectivo: 'NO', tipo_riego: '', razon_no: 'Lluvia / suelo húmedo', marca_temporal: marca(4, '07:02') },
@@ -162,7 +163,8 @@
       razonesRiegoNo: ['Lluvia / suelo húmedo', 'Falta de agua', 'Falla de bomba / equipo', 'Falta de personal', 'Decisión técnica', 'Otro (describir en observaciones)'],
       razonesAplicacionNo: ['Clima / lluvia', 'Falta de producto', 'Falta de personal', 'Decisión técnica', 'Otro (describir en observaciones)'],
       etapas: ['VE', 'V0', 'V1', 'V2', 'V3', 'V4', 'V5-V6', 'V6-V7', 'V7-V9', 'V9-V10', 'V11-V12', 'VT', 'R1-R2', 'R3-R4'],
-      tiposVivero: ['Self', 'Cross']
+      tiposVivero: ['Self', 'Cross'],
+      motivosAnulacion: ['Duplicado', 'Vivero equivocado', 'Fecha equivocada', 'Error de captura', 'Otro']
     },
 
     // Estudios que existen en BMS. Sirven para vincular cada vivero con su estudio exacto

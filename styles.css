@@ -131,8 +131,7 @@ h2 { margin: 0; font-size: 17px; font-weight: 700; }
 .row > .grow-1 { flex: 1 1 360px; }
 .stack { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
 
-.kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap:16px; }
-@media (max-width: 1100px) { .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 16px;}
 .kpi { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; }
 .kpi-label { font-size: 13px; font-weight: 600; color: var(--label); }
 .kpi-value { font-size: 32px; font-weight: 700; letter-spacing: -0.02em; margin: 4px 0; }
@@ -216,6 +215,10 @@ tr.fila-cambio { background: var(--info-row); }
 .valid-err { color: var(--err-fg); font-weight: 600; font-size: 13px; }
 .valid-cambio { color: var(--info-fg); font-weight: 600; font-size: 13px; }
 .table-foot { font-size: 13px; color: var(--muted); }
+
+/* Aplicaciones cercanas agrupadas por vivero (Panel) */
+tr.fila-grupo td { background: var(--surface-soft); border-top: 1px solid var(--line); padding: 10px 8px; }
+tr.fila-grupo .pill { font-size: 12px; padding: 2px 8px; }
 
 /* ------------------------------ Cuadricula de riego ----------------------------*/
 .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; color: var(--muted); }
@@ -313,6 +316,46 @@ tr.fila-cambio { background: var(--info-row); }
 @media (max-width: 820px) { .grid-form { grid-template-columns: minmax(0, 1fr); } }
 .form-vivero { border: 2px solid var(--green); }
 tr.fila-inactiva td { color: var(--muted); background: var(--surface-soft); }
+
+/*----------------------- Pantalla Detelle de vivero -----------------------------------*/
+.titulo-vivero { font-family: var(--mono); font-size: 26px; overflow-wrap: anywhere; }
+.det-botones .btn { min-height: 48px; }
+.btn-blue:hover { background: #093A63; border-color: #093A63; color: #FFF; }
+
+/* Linea de tiempo del plan: # | producto + ventanta | estado */
+.plan-linea { display: flex; flex-direction: column; }
+.plan-linea > div {
+    display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 10px; align-items: start;
+    padding: 9px 0; border-top: 1px solid var(--line-soft); font-size: 14px; 
+
+}
+.plan-linea > div:first-child { border-top: 0; }
+.plan-linea small { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
+.plan-linea > .hoy {
+    display: block; border-top: 2px solid var(--blue); color: var(--blue);
+    font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; padding: 4x 0;
+}
+
+/* Riegos del vivero: semanas de 7 días */
+.riegos-vivero { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.riegos-vivero .dia { display: flex; flex-direction: column; gap: 3px; text-align: center; }
+.riegos-vivero .dia small { font-size: 11px; color: var(--label); white-space: nowrap; }
+
+/*-------------------- Pantalla Registros ------------------------- */
+.filtros-registros { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; align-items: end; }
+@media (max-width: 1100px) { .filtros-registros { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 600px) { .filtros-registros { grid-template-columns: minmax(0, 1fr); } }
+tr.fila-anulada td { background: var(--surface-soft); color: var(--muted); }
+.tachado { text-decoration: line-through; }
+tr.fila-form td { padding: 0; border-top: 0; }
+.form-registro {
+    display: flex; flex-direction: column; gap: 12px; padding: 16px; margin: 4px 0 12px;
+    border: 2px solid var(--green); border-radius: var(--radius-sm); background: var(--surface-soft);
+}
+.form-registro.anular { border-color: var(--cell-no); }
+.btn-rojo { background: var(--cell-no); border-color: var(--cell-no); color: #FFF; }
+.btn-rojo:hover { background: #7E1515; border-color: #7E1515; color: #FFF; }
+.btn-filtro[aria-pressed=true] { background: var(--err-bg); border-color: var(--err-fg); color: var(--err-fg); }
 
 /* ------------------- Toast ------------------- */
 .toast {
